@@ -5,7 +5,7 @@
 
 ## Decision
 
-MAX98357A I2S amp + small speaker, WAV/MP3 from microSD; on-board buzzer as fallback.
+MAX98357A I2S amp + small speaker, WAV/MP3 from LittleFS (about 9 MB free on 16 MB flash; SD module optional). Amp held in shutdown between alarms. Piezo buzzer on a GPIO as fallback.
 
 ## Alternatives rejected
 

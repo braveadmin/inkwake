@@ -34,11 +34,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r firmware/requirements.txt
-      - run: pio run -d firmware -e paper_s3
+      - run: pio run -d firmware -e device
       - run: sudo apt-get update && sudo apt-get install -y openscad && make -C enclosure
       - name: Upload release assets
         run: |
-          b=firmware/.pio/build/paper_s3
+          b=firmware/.pio/build/device
           cp $b/firmware.bin "inkwake-${TAG}.bin"
           sha256sum "inkwake-${TAG}.bin" enclosure/build/*.stl > SHA256SUMS
           gh release upload "$TAG" "inkwake-${TAG}.bin" enclosure/build/*.stl SHA256SUMS --clobber

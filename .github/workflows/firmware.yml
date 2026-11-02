@@ -57,11 +57,11 @@ jobs:
           path: ~/.platformio
           key: pio-s3-${{ hashFiles('firmware/platformio.ini') }}
       - run: pip install -r requirements.txt
-      - run: pio run -e paper_s3
+      - run: pio run -e device
       - uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ github.sha }}
           path: |
-            firmware/.pio/build/paper_s3/firmware.bin
-            firmware/.pio/build/paper_s3/bootloader.bin
-            firmware/.pio/build/paper_s3/partitions.bin
+            firmware/.pio/build/device/firmware.bin
+            firmware/.pio/build/device/bootloader.bin
+            firmware/.pio/build/device/partitions.bin

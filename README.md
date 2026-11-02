@@ -1,7 +1,7 @@
 # inkwake
 
-Open source alarm clock: ESP32-S3, touch e-ink screen, 3D-printed case.
-Alarms work with Wi-Fi down; everything else (web UI, Home Assistant, widgets) sits on top.
+Open source alarm clock: ESP32-S3, 4.2" e-ink screen, touch pads in a 3D-printed case.
+Runs on a battery for weeks, plugged in only to charge. Alarms work with Wi-Fi down.
 
 > Status: pre-alpha, milestone M0 (hardware spike). Hobby project, no dates: see docs/roadmap.md.
 
@@ -16,11 +16,11 @@ Decisions: [docs/adr/](docs/adr/).
 
 | Part | Notes |
 | --- | --- |
-| ESP32-S3 touch e-ink board | M5Stack PaperS3 candidate, confirmed at M0 ([ADR-0002](docs/adr/0002-board.md)) |
-| MAX98357A I2S amp + speaker | custom sounds |
-| SK6812 RGBW ring | sunrise light |
-| SHT40 breakout | room temperature, I2C |
-| 5 V / 2 A USB-C supply | LEDs and amp peak together at alarm time |
+| Low-power ESP32-S3 board with LiPo charger | FeatherS3 or FireBeetle 2 S3, picked at M0 ([ADR-0002](docs/adr/0002-board.md)) |
+| Waveshare 4.2" e-paper V2 | display |
+| RV-3028, SHT40 | clock chip, room temperature |
+| MAX98357A + speaker, SK6812 RGBW ring | sound, sunrise light (switched off between uses) |
+| 2000-3000 mAh LiPo | 5-8 weeks per charge, estimated ([ADR-0013](docs/adr/0013-power.md)) |
 
 Full list: [hardware/BOM.csv](hardware/BOM.csv).
 
@@ -30,8 +30,8 @@ Full list: [hardware/BOM.csv](hardware/BOM.csv).
 pip install -r firmware/requirements.txt
 cd firmware
 pio test -e native        # host unit tests
-pio run -e paper_s3       # device firmware
-pio run -e paper_s3 -t upload
+pio run -e device       # device firmware
+pio run -e device -t upload
 ```
 
 Enclosure (OpenSCAD 2021+):

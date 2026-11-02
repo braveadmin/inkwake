@@ -5,7 +5,7 @@
 
 ## Decision
 
-Thin render layer over the vendor driver (M5GFX or epdiy). Partial refresh each minute, full refresh hourly and on wake.
+GxEPD2 over SPI with a thin render layer. Partial refresh each minute, full refresh hourly and on wake.
 
 ## Alternatives rejected
 

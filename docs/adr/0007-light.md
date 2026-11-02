@@ -5,7 +5,7 @@
 
 ## Decision
 
-SK6812 RGBW ring, warm-white channel, driven via RMT.
+SK6812 RGBW ring, warm-white channel, driven via RMT. Ring power cut by a MOSFET when off: each SK6812 idles at about 1 mA.
 
 ## Alternatives rejected
 

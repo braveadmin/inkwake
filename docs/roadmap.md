@@ -8,9 +8,9 @@ Only the shell track runs in parallel.
 
 Effort: 2-3 weekends (+ parts shipping).
 
-Board in hand, map spare GPIO and I2C, test touch, partial refresh, power draw.
+Breadboard all parts, measure whole-clock sleep current, panel partial refresh, touch-pad sensitivity through a printed test piece.
 
-**Exit gate:** 4+ spare GPIO and an I2C bus; ghosting acceptable with per-minute partial refresh.
+**Exit gate:** Sleep under 100 uA; ghosting acceptable with per-minute partial refresh.
 
 ## M1 Repo and CI
 
@@ -42,7 +42,7 @@ Effort: 3-4 weekends.
 
 F3, F4. I2S amp, custom sounds, volume ramp, SK6812 sunrise.
 
-**Exit gate:** No brownout with LEDs and amp at maximum together.
+**Exit gate:** No brownout on battery with LEDs and amp at maximum together.
 
 ## M5 Web UI and OTA
 
@@ -78,6 +78,6 @@ F7 Home Assistant / MQTT, F10 calendar widget.
 
 ## Shell track
 
-- [ ] **S1: shell fit test** After M0. Measure the real board, set enclosure/inkwake.scad parameters, print the front shell, check board fit, display window alignment and touch access.
-- [ ] **S2: shell features** With M4. Speaker grille and mount, LED ring diffuser, walled-off vented pocket for the temperature sensor, USB-C and microSD access, back plate with heat-set inserts.
+- [ ] **S1: shell fit test** After M0. Measure the real panel and board, set enclosure/inkwake.scad parameters, print the front shell, check panel window alignment and board mounting.
+- [ ] **S2: shell features** With M4. Speaker grille and mount, LED ring diffuser, walled-off vented pocket for the temperature sensor, battery bay, USB-C charging port, copper pads under the top and side walls, back plate with heat-set inserts.
 - [ ] **S3: final shell and print guide** With M7. Cosmetics, tilt and stability check, PETG print profile, assembly photos and print guide in docs/.

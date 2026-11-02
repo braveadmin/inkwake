@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: CERN-OHL-S-2.0
 // inkwake enclosure: wedge desk case, front shell + back plate.
-// All board dimensions are PLACEHOLDERS until measured at the M0 gate.
+// Holds a Waveshare 4.2" e-paper module, a low-power ESP32-S3 board and a LiPo.
+// All part dimensions are PLACEHOLDERS until measured at the M0 gate.
 // Render one part:  openscad -D 'part="front"' -o front.stl inkwake.scad
 
 /* [Part] */
 part = "assembly"; // [assembly, front, back]
 
-/* [Board (measure at M0)] */
-board_w = 125;      // PCB width, mm
-board_h = 70;       // PCB height, mm
-board_d = 12;       // PCB + parts depth, mm
-view_w  = 98;       // visible display area width, mm
-view_h  = 56;       // visible display area height, mm
+/* [Display panel (measure at M0)] */
+board_w = 103;      // e-paper module width, mm
+board_h = 79;       // e-paper module height, mm
+board_d = 14;       // module + MCU board stack depth, mm
+view_w  = 85;       // visible display area width, mm
+view_h  = 64;       // visible display area height, mm
 view_dx = 0;        // display offset from board centre, mm
 view_dy = 0;
 
@@ -21,6 +22,12 @@ clearance = 0.4;
 tilt      = 15;     // screen lean-back, degrees
 depth     = 55;     // footprint depth, mm
 corner_r  = 4;
+
+/* [Battery] */
+bat_l = 60;         // LiPo length, mm
+bat_w = 35;         // LiPo width, mm
+bat_h = 10;         // LiPo thickness, mm
+bat_gap = 1.5;      // clearance for swelling, mm
 
 /* [Speaker] */
 spk_d     = 40;     // speaker diameter, mm
@@ -77,6 +84,14 @@ module back() {
     }
     translate([outer_w / 2 - 6, -1, wall]) cube([12, wall + 2, 6]);
   }
+  battery_cradle();
+}
+
+// two rails on the back plate holding the LiPo, with swelling clearance
+module battery_cradle() {
+  cw = bat_w + 2 * bat_gap;
+  translate([outer_w / 2 - cw / 2 - wall, outer_h / 2 - bat_l / 2, wall])
+    for (x = [0, cw + wall]) translate([x, 0, 0]) cube([wall, bat_l, bat_h * 0.6]);
 }
 
 if (part == "front") front();
