@@ -8,9 +8,9 @@ Only the shell track runs in parallel.
 
 Effort: 2-3 weekends (+ parts shipping).
 
-Breadboard all parts, measure whole-clock sleep current, panel partial refresh, touch-pad sensitivity through a printed test piece.
+RLCD-4.2 in hand: measure whole-board sleep current with the screen showing, confirm KEY/PWR and battery-sense pins, tune touch-pad sensitivity through a printed test piece.
 
-**Exit gate:** Sleep under 100 uA; ghosting acceptable with per-minute partial refresh.
+**Exit gate:** Sleep under 1.5 mA with the screen showing.
 
 ## M1 Repo and CI
 
@@ -40,7 +40,7 @@ F1, F2. Scheduler, snooze state machine, buzzer fallback, alarms saved across re
 
 Effort: 3-4 weekends.
 
-F3, F4. I2S amp, custom sounds, volume ramp, SK6812 sunrise.
+F3, F4. Ambient wake sounds, warm-white sunrise, one wake sequence per alarm. Apply docs/sound.md.
 
 **Exit gate:** No brownout on battery with LEDs and amp at maximum together.
 
@@ -78,6 +78,6 @@ F7 Home Assistant / MQTT, F10 calendar widget.
 
 ## Shell track
 
-- [ ] **S1: shell fit test** After M0. Measure the real panel and board, set enclosure/inkwake.scad parameters, print the front shell, check panel window alignment and board mounting.
-- [ ] **S2: shell features** With M4. Speaker grille and mount, LED ring diffuser, walled-off vented pocket for the temperature sensor, battery bay, USB-C charging port, copper pads under the top and side walls, back plate with heat-set inserts.
+- [ ] **S1: shell fit test** After M0. Measure the RLCD-4.2 board, set enclosure/inkwake.scad parameters, print the front shell, check panel window alignment and board mounting.
+- [ ] **S2: shell features** With M4. Speaker grille and mount, LED ring diffuser, walled-off vented pocket for the temperature sensor, sealed 30-50 cm3 speaker chamber with open grille, 18650 access, USB-C charging port, copper pads under the top and side walls, back plate with heat-set inserts.
 - [ ] **S3: final shell and print guide** With M7. Cosmetics, tilt and stability check, PETG print profile, assembly photos and print guide in docs/.

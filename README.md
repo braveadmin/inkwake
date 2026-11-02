@@ -1,6 +1,6 @@
 # inkwake
 
-Open source alarm clock: ESP32-S3, 4.2" e-ink screen, touch pads in a 3D-printed case.
+Open source alarm clock: Waveshare ESP32-S3-RLCD-4.2, touch pads in a 3D-printed case.
 Runs on a battery for weeks, plugged in only to charge. Alarms work with Wi-Fi down.
 
 > Status: pre-alpha, milestone M0 (hardware spike). Hobby project, no dates: see docs/roadmap.md.
@@ -16,11 +16,9 @@ Decisions: [docs/adr/](docs/adr/).
 
 | Part | Notes |
 | --- | --- |
-| Low-power ESP32-S3 board with LiPo charger | FeatherS3 or FireBeetle 2 S3, picked at M0 ([ADR-0002](docs/adr/0002-board.md)) |
-| Waveshare 4.2" e-paper V2 | display |
-| RV-3028, SHT40 | clock chip, room temperature |
-| MAX98357A + speaker, SK6812 RGBW ring | sound, sunrise light (switched off between uses) |
-| 2000-3000 mAh LiPo | 5-8 weeks per charge, estimated ([ADR-0013](docs/adr/0013-power.md)) |
+| Waveshare ESP32-S3-RLCD-4.2 | 4.2" reflective LCD, RTC, temperature, audio, speaker, 18650 on one board ([ADR-0002](docs/adr/0002-board.md)) |
+| Warm-white LEDs + MOSFET | sunrise light ([ADR-0007](docs/adr/0007-light.md)) |
+| Copper tape | touch pads ([ADR-0015](docs/adr/0015-input.md)) |
 
 Full list: [hardware/BOM.csv](hardware/BOM.csv).
 

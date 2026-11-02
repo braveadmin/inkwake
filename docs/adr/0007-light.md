@@ -1,16 +1,16 @@
-# 0007. Sunrise light: SK6812 RGBW
+# 0007. Sunrise light: PWM warm-white LEDs
 
 - Status: Proposed
 - Date: 2026-11-02
 
 ## Decision
 
-SK6812 RGBW ring, warm-white channel, driven via RMT. Ring power cut by a MOSFET when off: each SK6812 idles at about 1 mA.
+Warm-white LEDs powered from the 18650, PWM through a logic-level N-MOSFET on GPIO17. Upgrade path: SK6812 RGBW ring with a 5 V boost converter enabled from GPIO18.
 
 ## Alternatives rejected
 
-WS2812B RGB.
+SK6812 RGBW ring as default.
 
 ## Rationale
 
-RGB-mixed white is blue and harsh early in the morning.
+The board has no 5 V rail on battery. Plain LEDs need no boost and draw nothing when off. The RGBW ring adds a red-to-white sunrise at the cost of a boost converter.

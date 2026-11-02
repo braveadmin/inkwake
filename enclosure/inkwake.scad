@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: CERN-OHL-S-2.0
 // inkwake enclosure: wedge desk case, front shell + back plate.
-// Holds a Waveshare 4.2" e-paper module, a low-power ESP32-S3 board and a LiPo.
+// Holds a Waveshare ESP32-S3-RLCD-4.2 (18650 in the board's own holder).
 // All part dimensions are PLACEHOLDERS until measured at the M0 gate.
 // Render one part:  openscad -D 'part="front"' -o front.stl inkwake.scad
 
 /* [Part] */
 part = "assembly"; // [assembly, front, back]
 
-/* [Display panel (measure at M0)] */
-board_w = 103;      // e-paper module width, mm
-board_h = 79;       // e-paper module height, mm
-board_d = 14;       // module + MCU board stack depth, mm
+/* [Board (measure at M0)] */
+board_w = 103;      // RLCD-4.2 board width, mm
+board_h = 79;       // RLCD-4.2 board height, mm
+board_d = 28;       // board + 18650 holder depth, mm
 view_w  = 85;       // visible display area width, mm
 view_h  = 64;       // visible display area height, mm
 view_dx = 0;        // display offset from board centre, mm
@@ -23,14 +23,16 @@ tilt      = 15;     // screen lean-back, degrees
 depth     = 55;     // footprint depth, mm
 corner_r  = 4;
 
-/* [Battery] */
-bat_l = 60;         // LiPo length, mm
-bat_w = 35;         // LiPo width, mm
-bat_h = 10;         // LiPo thickness, mm
-bat_gap = 1.5;      // clearance for swelling, mm
+/* [External battery (fallback build only)] */
+ext_battery = false; // RLCD-4.2 carries its 18650; true adds a LiPo cradle
+bat_l = 60;
+bat_w = 35;
+bat_h = 10;
+bat_gap = 1.5;
 
 /* [Speaker] */
-spk_d     = 40;     // speaker diameter, mm
+spk_d     = 40;     // speaker diameter, mm (measure the included 8 ohm 2 W unit)
+spk_vol   = 40;     // sealed back chamber target, cm3 (30-50, docs/sound.md)
 hole_d    = 2.5;
 hole_gap  = 4.5;
 
@@ -84,7 +86,7 @@ module back() {
     }
     translate([outer_w / 2 - 6, -1, wall]) cube([12, wall + 2, 6]);
   }
-  battery_cradle();
+  if (ext_battery) battery_cradle();
 }
 
 // two rails on the back plate holding the LiPo, with swelling clearance

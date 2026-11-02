@@ -1,15 +1,10 @@
 ref,part,qty,notes
-U1,ESP32-S3 low-power board with LiPo charger (N16R8),1,Unexpected Maker FeatherS3 or DFRobot FireBeetle 2 ESP32-S3; pick at M0
-DS1,Waveshare 4.2inch e-Paper module V2 (400x300 SPI),1,V2 needed for partial refresh
-U2,MAX98357A I2S amplifier breakout,1,SD pin held low between alarms (shutdown)
-LS1,Speaker 4 ohm 3 W 40 mm,1,size matches spk_d in enclosure/inkwake.scad
-D1,SK6812 RGBW LED ring,1,warm white variant; powered through Q1
-U3,Sensirion SHT40 breakout (I2C),1,room temperature; in vented pocket away from board heat
-U4,Micro Crystal RV-3028 breakout (I2C),1,low-power RTC; remove any power LED
-Q1,Logic-level P-MOSFET or load switch,1,switches LED ring + amp rail
-BT1,LiPo 3.7 V 2000-3000 mAh with protection circuit,1,JST-PH to the board's charger
-BZ1,Piezo buzzer,1,fallback alarm on a GPIO
-C1,Electrolytic capacitor 1000 uF 10 V,1,bulk cap on the switched rail
--,Copper tape,~10 cm,touch pads under top and side walls
+U1,Waveshare ESP32-S3-RLCD-4.2 (SKU 33298),1,includes 18650 cell and 8 ohm 2 W speaker; RTC SHTC3 audio TF on board
+Q1,Logic-level N-MOSFET (e.g. AO3400),1,PWM switch for the sunrise LEDs on GPIO17
+D1,Warm-white LEDs (2700 K) + series resistors,6-10,sunrise and night glow; powered from battery +
+-,TF card (FAT32),1,ambient sounds
+-,Copper tape,~10 cm,touch pads on GPIO1 / GPIO2
 -,M3 heat-set inserts + M3x8 screws,4,back plate
 -,PETG filament,~120 g,PLA acceptable away from LEDs
+-,Optional: SK6812 RGBW ring + 5 V boost with enable (e.g. TPS61023),1,upgrade for a red-to-white sunrise; enable on GPIO18
+-,Optional: PCF85063 backup cell (PH1.0),1,keeps time with the 18650 removed

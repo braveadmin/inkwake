@@ -5,12 +5,12 @@
 
 ## Decision
 
-Copper-tape pads inside the shell, wired to ESP32-S3 touch pins. Top pad: tap = snooze, hold 2 s = dismiss. Side pad: tap = night glow, hold 5 s = web UI.
+Copper-tape pads inside the shell: top pad on GPIO1 (tap = snooze, hold 2 s = dismiss), side pad on GPIO2 (tap = night glow, hold 5 s = web UI). The board's KEY button is a backup snooze. GPIO3 spare for a third pad.
 
 ## Alternatives rejected
 
-Touch e-paper panel; mechanical buttons.
+Touch panel; buttons only.
 
 ## Rationale
 
-Easier to hit half asleep than a spot on a screen, almost free, and a pad can wake the chip from deep sleep. Affordable touch e-paper panels are 296x128, too small for widgets.
+Easier to hit half asleep than a spot on a screen, almost free, and a pad can wake the chip from deep sleep.
