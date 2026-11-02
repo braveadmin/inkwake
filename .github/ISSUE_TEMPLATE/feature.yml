@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose a feature or a widget
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What should the clock do?
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done means
+      description: Observable behaviour that closes this issue.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [alarm, display, audio, light, web-ui, integrations, widgets, enclosure, ci]

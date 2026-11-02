@@ -1,0 +1,26 @@
+name: Bug report
+description: Something misbehaves
+labels: ["type:bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Firmware version
+      placeholder: v0.3.1 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: board
+    attributes:
+      label: Board
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, what you expected, how to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Serial log
+      render: text

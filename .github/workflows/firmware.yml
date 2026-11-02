@@ -1,0 +1,67 @@
+name: firmware
+
+on:
+  push:
+    branches: [main]
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+  pull_request:
+    paths: ["firmware/**", ".github/workflows/firmware.yml"]
+
+concurrency:
+  group: firmware-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: firmware
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-format
+      - run: find src lib test \( -name '*.cpp' -o -name '*.h' \) | xargs clang-format --dry-run --Werror
+
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: firmware/requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-native-${{ hashFiles('firmware/platformio.ini') }}
+      - run: pip install -r requirements.txt
+      - run: pio test -e native
+
+  build:
+    needs: [lint, test]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: firmware/requirements.txt
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-s3-${{ hashFiles('firmware/platformio.ini') }}
+      - run: pip install -r requirements.txt
+      - run: pio run -e paper_s3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: |
+            firmware/.pio/build/paper_s3/firmware.bin
+            firmware/.pio/build/paper_s3/bootloader.bin
+            firmware/.pio/build/paper_s3/partitions.bin

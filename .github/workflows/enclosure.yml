@@ -1,0 +1,23 @@
+name: enclosure
+
+on:
+  push:
+    branches: [main]
+    paths: ["enclosure/**", ".github/workflows/enclosure.yml"]
+  pull_request:
+    paths: ["enclosure/**", ".github/workflows/enclosure.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  stl:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y openscad
+      - run: make -C enclosure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stl-${{ github.sha }}
+          path: enclosure/build/*.stl

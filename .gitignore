@@ -1,0 +1,8 @@
+.pio/
+.vscode/*
+!.vscode/extensions.json
+enclosure/build/
+sim/out/
+__pycache__/
+*.pyc
+.DS_Store
