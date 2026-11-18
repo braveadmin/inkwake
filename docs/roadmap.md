@@ -12,6 +12,8 @@ RLCD-4.2 in hand: measure whole-board sleep current with the screen showing, con
 
 **Exit gate:** Sleep under 1.5 mA with the screen showing.
 
+Status: pins and display confirmed, deep sleep keeps the image (docs/m0-spike.md). The current measurement and touch-plate tests are deferred to the hardware phase before M7; software continues with M2.
+
 ## M1 Repo and CI
 
 Effort: 1 weekend.
@@ -78,6 +80,6 @@ F7 Home Assistant / MQTT, F10 calendar widget.
 
 ## Shell track
 
-- [ ] **S1: shell fit test** After M0. Measure the RLCD-4.2 board, set enclosure/inkwake.scad parameters, print the front shell, check panel window alignment and board mounting.
-- [ ] **S2: shell features** With M4. Speaker grille and mount, LED ring diffuser, walled-off vented pocket for the temperature sensor, sealed 30-50 cm3 speaker chamber with open grille, 18650 access, USB-C charging port, copper pads under the top and side walls, back plate with heat-set inserts.
+- [ ] **S1: shell fit test** Deferred with the M0 current test to the hardware phase before M7. Measure the RLCD-4.2 board, set enclosure/inkwake.scad parameters, print the front shell, check panel window alignment and board mounting.
+- [ ] **S2: shell features** Hardware phase before M7. Speaker grille and mount, LED ring diffuser, walled-off vented pocket for the temperature sensor, sealed 30-50 cm3 speaker chamber with open grille, 18650 access, USB-C charging port, copper pads under the top and side walls, back plate with heat-set inserts.
 - [ ] **S3: final shell and print guide** With M7. Cosmetics, tilt and stability check, PETG print profile, assembly photos and print guide in docs/.

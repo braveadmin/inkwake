@@ -41,7 +41,7 @@ Average current ≈ I_sleep + (I_awake − I_sleep) × t_awake / 60 s. `t_awake`
 
 | Mode | What | I_sleep | I_awake (peak) | t_awake | Image stays? | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Deep sleep, panel LPM | | | | | **exit gate** |
+| 1 | Deep sleep, panel LPM | | | | Yes, advances each minute, no flicker (2026-11-18) | **exit gate** |
 | 2 | Deep sleep, panel HPM | | | | | |
 | 3 | Light sleep, panel LPM | | | | | |
 | 4 | Deep sleep, panel off | | | | | baseline without screen |
@@ -88,4 +88,10 @@ Known limit: the ESP32-S3 deep-sleep touch wake watches **one** channel. The top
 
 ## Outcome
 
-Fill in when done: gate pass/fail, chosen sleep strategy (deep + held pins vs light), pad skin thickness, and updates to ADR-0002, ADR-0013, ADR-0015 and hardware/wiring.md.
+Status 2026-11-18: partly done, current measurement deferred.
+
+- Done: display, KEY, BOOT, battery sense (GPIO4, reads 4.14 V on USB), touch on bare pins (GPIO1-3).
+- Deep sleep with the panel in LPM and DC/CS/RST held keeps the image, redraws each minute without flicker. Firmware assumes this strategy (deep sleep + held pins).
+- Deferred to the hardware phase before v1.0: sleep current (the meter used had no fuse in its mA range and was damaged; needs a fused meter with a µA/mA input), PWR circuit, touch through the printed test plate.
+
+Still to fill in then: gate pass/fail, pad skin thickness, and updates to ADR-0013 and ADR-0015.
