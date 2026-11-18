@@ -61,8 +61,12 @@ bool write(time_t t) {
   // Keep only CAP_SEL: 24-hour mode, no test mode, no software reset.
   ctrl1 &= p::kControl1CapSel;
   const uint8_t stop = ctrl1 | p::kControl1Stop;
-  return write_regs(p::kRegControl1, &stop, 1) && write_regs(p::kRegSeconds, regs, sizeof regs) &&
-         write_regs(p::kRegControl1, &ctrl1, 1);
+  if (!write_regs(p::kRegControl1, &stop, 1) || !write_regs(p::kRegSeconds, regs, sizeof regs) ||
+      !write_regs(p::kRegControl1, &ctrl1, 1)) {
+    return false;
+  }
+  time_t back;
+  return read(back) == Status::Ok;
 }
 
 bool arm_minute_interrupt() {

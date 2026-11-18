@@ -17,7 +17,9 @@ void begin();
 // Reads the time (UTC). TimeLost: the chip lost power or was never set.
 Status read(time_t& t);
 
-// Sets the time and restarts the second at this moment.
+// Sets the time and restarts the second at this moment, then reads it back.
+// False if the chip did not take it: right after power-up the crystal needs up
+// to ~2 s to start, and until then the oscillator-stopped flag will not clear.
 bool write(time_t t);
 
 // Enables the once-a-minute interrupt and releases INT (clears its flag). Must
