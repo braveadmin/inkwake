@@ -8,7 +8,7 @@ Each feature is worked in its own session, tracked as a GitHub issue (braveadmin
 - M0 hardware spike: partly done, rest deferred to a hardware phase before M7 (issue #17, docs/m0-spike.md).
   Confirmed: display, KEY, BOOT, battery sense, touch on bare pins; deep sleep with the panel in LPM and DC/CS/RST held keeps the image and redraws without flicker. Not measured: sleep current, PWR circuit, touch through plastic.
 - M1: milestones, labels and issues created with scripts/bootstrap-github.sh (re-runnable, skips existing). Open: #21 pin the pioarduino platform release.
-- M2 clock core in progress. Next up: #19. #18 display driver + partial refresh + clock face: done and verified on the board 2026-11-18 (`box` top-left, `set`, in-place minute updates, battery deep sleep). Lives on `m0-spike`; the issue closes when PR #1 merges. Next: #19 PCF85063 RTC, #12 F11 room temperature, #20 Wi-Fi provisioning, #13 F12 NTP + timezone.
+- M2 clock core in progress. #18 display driver + partial refresh + clock face: done and verified on the board 2026-11-18 (`box` top-left, `set`, in-place minute updates, battery deep sleep). Lives on `m0-spike`; the issue closes when PR #1 merges. Next: #19 PCF85063 RTC, #12 F11 room temperature, #20 Wi-Fi provisioning, #13 F12 NTP + timezone.
 - Device firmware (env `device`) is now the clock: deep sleep between minutes on battery, stays awake with serial commands (`set YYYY-MM-DD HH:MM`, `full`, `box`) while a USB host is plugged in. Time runs on the ESP32 system clock (starts at build time, UTC, no TZ, drifts) until #19/#13.
 - Shell work S1/S2 (#14, #15) moved to the hardware phase before M7.
 
