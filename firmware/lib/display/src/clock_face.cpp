@@ -75,6 +75,7 @@ Rect text_band(const Font& f, int baseline) {
 }
 
 char digit(FaceState s, FaceRegion r) {
+  if (!s.time_set) return '-';
   switch (r) {
     case FaceRegion::HourTens:
       return static_cast<char>('0' + s.hour / 10);
@@ -88,6 +89,7 @@ char digit(FaceState s, FaceRegion r) {
 }
 
 bool same_date(const FaceState& a, const FaceState& b) {
+  if (!a.time_set || !b.time_set) return a.time_set == b.time_set;
   return a.weekday == b.weekday && a.day == b.day && a.month == b.month;
 }
 
@@ -145,6 +147,10 @@ size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out) {
 }
 
 void format_date(const FaceState& s, char* buf, size_t n) {
+  if (!s.time_set) {
+    snprintf(buf, n, "Time not set");
+    return;
+  }
   const char* wd = kWeekdays[s.weekday % 7];
   const char* mo = kMonths[(s.month + 11) % 12];  // 1-12, anything else wraps
   snprintf(buf, n, "%s %u %s", wd, static_cast<unsigned>(s.day), mo);

@@ -289,6 +289,29 @@ static void test_dirty_regions_cover_pixel_diff() {
   check_diff_covered(FaceState{11, 11, 4, 11, 5, 111}, FaceState{18, 48, 2, 28, 12, 888});
 }
 
+static void test_time_not_set() {
+  FaceState unset{7, 5, 2, 18, 11, 215};
+  unset.time_set = false;
+  char buf[40];
+  format_date(unset, buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("Time not set", buf);
+
+  // Losing the time redraws the four digits and the date, not the temperature.
+  const FaceState set{7, 5, 2, 18, 11, 215};
+  Rect out[kFaceRegions];
+  TEST_ASSERT_EQUAL_UINT32(5, face_dirty(set, unset, out));
+  TEST_ASSERT_EQUAL_UINT32(5, face_dirty(unset, set, out));
+  // While unset, the hidden time ticking on changes nothing.
+  FaceState later = unset;
+  later.minute = 6;
+  later.day = 19;
+  TEST_ASSERT_EQUAL_UINT32(0, face_dirty(unset, later, out));
+
+  check_diff_covered(set, unset);
+  check_diff_covered(unset, set);
+  check_diff_covered(unset, later);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_packing_matches_spike_formula);
@@ -306,5 +329,6 @@ int main(int, char**) {
   RUN_TEST(test_regions_inside_screen_and_disjoint);
   RUN_TEST(test_dirty_regions);
   RUN_TEST(test_dirty_regions_cover_pixel_diff);
+  RUN_TEST(test_time_not_set);
   return UNITY_END();
 }

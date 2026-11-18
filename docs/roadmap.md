@@ -28,7 +28,7 @@ Effort: 3-4 weekends.
 
 RTC driver, F12 NTP sync + timezone, Wi-Fi provisioning, F11 room temperature, clock face with partial refresh.
 
-**Exit gate:** 24 h unattended run; correct time after power cycle with Wi-Fi off.
+**Exit gate:** 24 h unattended run; correct time with Wi-Fi off across resets, deep sleep and USB unplug/replug on battery. After PWR off or a flat battery (the on-board RTC has no backup supply, verified 2026-11-18) the face shows "Time not set" instead of a wrong time, and NTP sets it once Wi-Fi is configured.
 
 ## M3 Alarms MVP
 

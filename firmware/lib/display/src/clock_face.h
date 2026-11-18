@@ -19,10 +19,11 @@ struct FaceState {
   uint8_t day = 1;            // 1-31
   uint8_t month = 1;          // 1-12
   int16_t temp_dc = kNoTemp;  // room temperature in tenths of a degree C
+  bool time_set = true;       // false: the clock lost its time; shows --:-- and "Time not set"
 
   bool operator==(const FaceState& o) const {
-    return hour == o.hour && minute == o.minute && weekday == o.weekday && day == o.day &&
-           month == o.month && temp_dc == o.temp_dc;
+    return time_set == o.time_set && hour == o.hour && minute == o.minute && weekday == o.weekday &&
+           day == o.day && month == o.month && temp_dc == o.temp_dc;
   }
   bool operator!=(const FaceState& o) const { return !(*this == o); }
 };
@@ -40,7 +41,7 @@ void render_face(Framebuffer& fb, const FaceState& s);
 // (room for kFaceRegions). Returns how many.
 size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out);
 
-// "Wednesday 18 November". `n` >= 32 is always enough.
+// "Wednesday 18 November", or "Time not set". `n` >= 32 is always enough.
 void format_date(const FaceState& s, char* buf, size_t n);
 // "21.5 °C", "-3.0 °C", or "--.- °C" without a reading (UTF-8).
 void format_temp(int16_t temp_dc, char* buf, size_t n);

@@ -10,8 +10,10 @@
 // ESP32 is off. Its once-a-minute interrupt on GPIO15 wakes the board; each
 // wake copies the RTC time into the ESP32 system clock (whose deep-sleep timer
 // drifts by seconds per minute). A timer wake 10 s after the minute is a
-// fallback in case the interrupt is missed. If the RTC lost its time, the
-// firmware build time (UTC) is written to it; set it over serial with `set`.
+// fallback in case the interrupt is missed. The RTC has no backup supply, so
+// PWR off or a flat battery loses the time: the face then shows --:-- and
+// "Time not set" until `set` over serial (later NTP, #13) writes it. The RTC's
+// oscillator-stopped flag is what marks this, so it survives resets and sleep.
 // No timezone yet (#13): the RTC holds what is displayed.
 #include <Arduino.h>
 #include <driver/gpio.h>
@@ -49,6 +51,7 @@ struct RtcState {
   uint32_t timer_wakes;  // woken by the fallback timer: interrupt missed or not armed
   uint32_t rtc_errors;   // wakes where the RTC could not be read
   bool int_pullup;       // GPIO15 has no external pull-up: use the internal one in sleep
+  bool time_set;         // false while the RTC reports its time lost
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -69,6 +72,7 @@ FaceState current_face() {
   s.day = static_cast<uint8_t>(t.tm_mday);
   s.month = static_cast<uint8_t>(t.tm_mon + 1);
   s.temp_dc = kNoTemp;  // room temperature arrives with #12
+  s.time_set = g_rtc.time_set;
   return s;
 }
 
@@ -79,26 +83,16 @@ void set_system_clock(time_t t) {
 
 // Copies the RTC time into the system clock. On a minute-interrupt wake the
 // RTC has just turned the minute, so the lost fraction of a second is tiny.
+// No answer on I2C keeps the system clock and the previous time_set.
 rtc::Status sync_from_rtc() {
   time_t t;
   const rtc::Status s = rtc::read(t);
   if (s == rtc::Status::Ok) set_system_clock(t);
+  if (s != rtc::Status::NoDevice) g_rtc.time_set = s == rtc::Status::Ok;
   return s;
 }
 
-// Writes the system time to an RTC that lost it. Retries for a few seconds:
-// after power-up its crystal takes up to ~2 s to start.
-bool restore_rtc() {
-  const uint32_t t0 = millis();
-  while (!rtc::write(time(nullptr))) {
-    if (millis() - t0 > 4000) return false;
-    delay(250);
-  }
-  return true;
-}
-
-// Sets both the system clock and the RTC.
-void set_clock(int year, int mon, int day, int hour, int min, int sec) {
+time_t make_time(int year, int mon, int day, int hour, int min, int sec) {
   tm t{};
   t.tm_year = year - 1900;
   t.tm_mon = mon - 1;
@@ -106,12 +100,19 @@ void set_clock(int year, int mon, int day, int hour, int min, int sec) {
   t.tm_hour = hour;
   t.tm_min = min;
   t.tm_sec = sec;
-  const time_t now = mktime(&t);  // TZ unset: local time = UTC
-  set_system_clock(now);
-  if (!rtc::write(now)) Serial.print("RTC write failed\r\n");
+  return mktime(&t);  // TZ unset: local time = UTC
 }
 
-// __DATE__ is "Nov 18 2026", __TIME__ is "12:34:56".
+// Sets both the system clock and the RTC.
+void set_clock(time_t now) {
+  set_system_clock(now);
+  g_rtc.time_set = true;
+  // Fails if the RTC is missing, or within ~2 s of power-up while its crystal starts.
+  if (!rtc::write(now)) Serial.print("RTC write failed: try `set` again\r\n");
+}
+
+// __DATE__ is "Nov 18 2026", __TIME__ is "12:34:56". Gives the system clock a
+// start for the wake timer maths while the time is not set; not shown.
 void set_clock_from_build() {
   static const char kMonths[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
   char mon[4] = {};
@@ -119,7 +120,7 @@ void set_clock_from_build() {
   sscanf(__DATE__, "%3s %d %d", mon, &day, &year);
   sscanf(__TIME__, "%d:%d:%d", &h, &m, &s);
   const char* p = strstr(kMonths, mon);
-  set_clock(year, p ? static_cast<int>(p - kMonths) / 3 + 1 : 1, day, h, m, s);
+  set_system_clock(make_time(year, p ? static_cast<int>(p - kMonths) / 3 + 1 : 1, day, h, m, s));
 }
 
 // Redraws the face. Full refresh on demand and once an hour, otherwise only
@@ -221,7 +222,7 @@ void handle_line(const String& line) {
   int y, mo, d, h, mi;
   if (line.startsWith("set ") &&
       sscanf(line.c_str() + 4, "%d-%d-%d %d:%d", &y, &mo, &d, &h, &mi) == 5) {
-    set_clock(y, mo, d, h, mi, 0);
+    set_clock(make_time(y, mo, d, h, mi, 0));
     print_rtc();
     update_display(true);
   } else if (line == "rtc") {
@@ -258,30 +259,23 @@ void setup() {
   const bool woke =
       (cause == ESP_SLEEP_WAKEUP_TIMER || cause == ESP_SLEEP_WAKEUP_EXT1) && g_rtc.magic == kMagic;
   rtc::Status rtc_status = rtc::Status::Ok;
-  bool restored = false;
   if (woke) {
     g_rtc.wakes++;
     if (ext1 & (1ULL << rtc::kIntPin)) g_rtc.rtc_wakes++;
     if (cause == ESP_SLEEP_WAKEUP_TIMER) g_rtc.timer_wakes++;
     rtc_status = sync_from_rtc();
-    if (rtc_status != rtc::Status::Ok) {
-      g_rtc.rtc_errors++;  // keep the system clock, and give it back to the RTC
-      if (rtc_status == rtc::Status::TimeLost) rtc::write(time(nullptr));
-    }
+    if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
     g_lcd.begin(false);
     update_display(false);
     // Minute tick: back to sleep at once. Looking for a USB host costs time
     // on every wake; to use serial after plugging in, press KEY.
     if (!key) deep_sleep();
   } else {
-    rtc_status = sync_from_rtc();
-    if (rtc_status != rtc::Status::Ok) {
-      // A reset keeps the system clock; a power-on starts it at 1970.
-      if (time(nullptr) < kMinValidTime) set_clock_from_build();
-      if (rtc_status == rtc::Status::TimeLost) restored = restore_rtc();
-    }
     rtc::arm_minute_interrupt();  // release INT before probing it
-    g_rtc = RtcState{kMagic, FaceState{}, 0, 0, 0, 0, int_needs_pullup()};
+    g_rtc = RtcState{kMagic, FaceState{}, 0, 0, 0, 0, int_needs_pullup(), false};
+    rtc_status = sync_from_rtc();
+    // A reset keeps the system clock; a power-on starts it at 1970.
+    if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
     g_lcd.begin(true);
     update_display(true);
   }
@@ -297,10 +291,7 @@ void setup() {
   Serial.printf("\r\nwake cause %d (0 = power-on or reset), %lu deep-sleep wakes\r\n",
                 static_cast<int>(cause), static_cast<unsigned long>(g_rtc.wakes));
   if (rtc_status != rtc::Status::Ok) {
-    Serial.printf("RTC at boot: %s%s\r\n", rtc::status_name(rtc_status),
-                  rtc_status != rtc::Status::TimeLost ? ""
-                  : restored                          ? ", time written"
-                                                      : ", write did not stick");
+    Serial.printf("RTC at boot: %s. Set the time with `set`.\r\n", rtc::status_name(rtc_status));
   }
   print_rtc();
   print_help();
