@@ -7,6 +7,12 @@
 // partial write sets a smaller window with 0x2A/0x2B and sends, for each row in
 // it, the contiguous byte run the window covers.
 //
+// Column addresses are mirrored (MADCTL 0x48): buffer column c (bytes 3c..3c+2
+// of a row, c = 0 at the bottom of the screen) is address 0x2A - c, and writes
+// start at the window's end address. A full window hides this; partial ones
+// land mirrored about the screen's middle if it is ignored (seen on the panel
+// 2026-11-18). Waveshare's ST7305_U8g2.cpp uses the same 0x3C - addr mapping.
+//
 // Granularity: 2 pixels in x (one panel row), 12 pixels in y (one column address).
 #pragma once
 
@@ -18,12 +24,13 @@
 namespace inkwake {
 
 struct PanelWindow {
-  static constexpr uint8_t kColBase = 0x12;  // first column address of the panel
-  static constexpr uint8_t kCols = 25;       // 0x12..0x2A
+  static constexpr uint8_t kColFirstAddr = 0x12;  // column address range of the panel
+  static constexpr uint8_t kColLastAddr = 0x2A;
+  static constexpr uint8_t kCols = 25;
   static constexpr uint8_t kBytesPerCol = 3;
   static constexpr uint8_t kRows = 200;  // 0x00..0xC7
 
-  uint8_t col_first = 0;  // 0..24, add kColBase for the 0x2A command
+  uint8_t col_first = 0;  // buffer columns 0..24 (0 = bottom); see col_*_addr()
   uint8_t col_last = 0;
   uint8_t row_first = 0;  // 0..199, sent as is with 0x2B
   uint8_t row_last = 0;
@@ -33,9 +40,9 @@ struct PanelWindow {
            row_last == o.row_last;
   }
 
-  // Parameters for the 0x2A and 0x2B commands.
-  uint8_t col_start_addr() const { return static_cast<uint8_t>(kColBase + col_first); }
-  uint8_t col_end_addr() const { return static_cast<uint8_t>(kColBase + col_last); }
+  // Parameters for the 0x2A command (mirrored, see above). 0x2B takes the rows as is.
+  uint8_t col_start_addr() const { return static_cast<uint8_t>(kColLastAddr - col_last); }
+  uint8_t col_end_addr() const { return static_cast<uint8_t>(kColLastAddr - col_first); }
 
   size_t rows() const { return static_cast<size_t>(row_last - row_first + 1); }
   // Bytes sent per panel row, and in total.

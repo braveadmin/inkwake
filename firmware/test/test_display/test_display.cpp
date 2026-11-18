@@ -103,6 +103,24 @@ static void test_small_window() {
   TEST_ASSERT_EQUAL_UINT32(3, w.row_len());
   TEST_ASSERT_EQUAL_UINT32(6, w.bytes());
   TEST_ASSERT_EQUAL_UINT32(5 * 75 + 72, w.row_offset(5));
+  // Top of the screen = last buffer column = first column address (mirrored).
+  TEST_ASSERT_EQUAL_HEX8(0x12, w.col_start_addr());
+  TEST_ASSERT_EQUAL_HEX8(0x12, w.col_end_addr());
+}
+
+// The `box` check on the panel: a 36x36 square at the top-left. Before the
+// mirror fix it was sent to 0x28..0x2A and showed at the bottom-left.
+static void test_column_addresses_are_mirrored() {
+  const PanelWindow top = PanelWindow::cover({0, 0, 36, 36});
+  TEST_ASSERT_EQUAL_UINT8(22, top.col_first);
+  TEST_ASSERT_EQUAL_UINT8(24, top.col_last);
+  TEST_ASSERT_EQUAL_HEX8(0x12, top.col_start_addr());
+  TEST_ASSERT_EQUAL_HEX8(0x14, top.col_end_addr());
+
+  const PanelWindow bottom = PanelWindow::cover({0, 288, 10, 12});
+  TEST_ASSERT_EQUAL_UINT8(0, bottom.col_first);
+  TEST_ASSERT_EQUAL_HEX8(0x2A, bottom.col_start_addr());
+  TEST_ASSERT_EQUAL_HEX8(0x2A, bottom.col_end_addr());
 }
 
 static void test_full_columns_mode_spans_height() {
@@ -279,6 +297,7 @@ int main(int, char**) {
   RUN_TEST(test_rect_united_and_clipped);
   RUN_TEST(test_full_window_matches_init_sequence);
   RUN_TEST(test_small_window);
+  RUN_TEST(test_column_addresses_are_mirrored);
   RUN_TEST(test_full_columns_mode_spans_height);
   RUN_TEST(test_window_covers_rect);
   RUN_TEST(test_text_width_and_drawing);

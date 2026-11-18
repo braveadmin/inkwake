@@ -11,10 +11,9 @@ namespace {
 constexpr uint32_t kSpiHz = 10'000'000;  // Waveshare's esp_lcd demo runs at 10 MHz
 
 // Narrow the column window (0x2A) as well as the row window (0x2B) on partial
-// writes. Waveshare's demos only ever send full-width column windows, so this
-// path is first exercised here. If partial updates land in the wrong place on
-// the panel (check with the `box` serial command), set this to false: windows
-// then span the full screen height and only the row window narrows.
+// writes. Column addresses are mirrored (panel_window.h); the `box` serial
+// command checks the mapping. Fallback if it ever misbehaves: false makes
+// windows span the full screen height and narrows only the row window.
 constexpr bool kNarrowColumns = true;
 
 }  // namespace

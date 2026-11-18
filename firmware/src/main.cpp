@@ -37,7 +37,10 @@ struct RtcState {
   FaceState shown;  // what the panel shows now
   uint32_t wakes;
 };
-RTC_DATA_ATTR RtcState g_rtc;
+// `= {}` makes this a constant initialization. Without it, FaceState's member
+// defaults can turn it into startup code that runs again on every deep-sleep
+// wake, resetting `shown` (magic survives) so each wake redrew every field.
+RTC_DATA_ATTR RtcState g_rtc = {};
 
 Framebuffer g_fb;
 St7305 g_lcd;
@@ -190,10 +193,26 @@ void setup() {
 }
 
 void loop() {
-  if (Serial.available()) {
-    String line = Serial.readStringUntil('\n');
-    line.trim();
-    handle_line(line);
+  // The serial terminal sends each key as it is typed, so collect a line until
+  // Enter (CR or LF) instead of reading with a timeout, and echo it back.
+  static String line;
+  while (Serial.available()) {
+    const int c = Serial.read();
+    if (c == '\r' || c == '\n') {
+      if (line.isEmpty()) continue;  // second half of CRLF
+      Serial.print("\r\n");
+      line.trim();
+      handle_line(line);
+      line = "";
+    } else if (c == '\b' || c == 0x7F) {
+      if (!line.isEmpty()) {
+        line.remove(line.length() - 1);
+        Serial.print("\b \b");
+      }
+    } else if (c >= 0x20 && c < 0x7F && line.length() < 64) {
+      line += static_cast<char>(c);
+      Serial.write(static_cast<uint8_t>(c));
+    }
   }
   if (current_face() != g_rtc.shown) update_display(false);
   if (!HWCDC::isPlugged()) {
