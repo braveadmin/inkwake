@@ -18,6 +18,8 @@ Each feature is worked in its own session, tracked as a GitHub issue (braveadmin
 
 ## Build and flash
 
+**Rule: whenever a change alters how the user flashes (new or removed image files, changed addresses, partition table, erase needed or not, new flasher tool or steps), tell the user explicitly in that session, before they flash, with the full updated file/address table.** Also update this section. Current procedure: three files, 0x0 bootloader.bin, 0x8000 partitions.bin, 0x10000 firmware.bin.
+
 - CI (.github/workflows/firmware.yml) runs lint (clang-format), `pio test -e native`, `pio run -e device` and `pio run -e spike`, and uploads `firmware-<sha>` and `spike-<sha>` artifacts (bootloader.bin, partitions.bin, firmware.bin).
 - The user flashes from the browser with https://adafruit.github.io/Adafruit_WebSerial_ESPTool/: erase, then 0x0 bootloader.bin, 0x8000 partitions.bin, 0x10000 firmware.bin. esptool-js (espressif.github.io) fails here with "CryptoJS is not defined" (CDN blocked).
 - Erase Flash wipes NVS (saved settings, Wi-Fi credentials). For normal updates tell the user to flash only firmware.bin at 0x10000 without erasing; full erase + three files for a first install or recovery, and after OTA has been used (otadata may point to the second app slot). Tell the user when a new image (e.g. littlefs.bin in M5) or a partition change adds or moves an address.
