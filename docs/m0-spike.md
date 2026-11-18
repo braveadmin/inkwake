@@ -61,8 +61,8 @@ Battery life at 2500 mAh: 1.0 mA ≈ 104 days, 1.5 mA ≈ 69 days. ADR-0013 targ
 
 | Check | Result |
 | --- | --- |
-| `w`: KEY reads 1 when pressed | |
-| `w`: BOOT reads 1 when pressed | |
+| `w`: KEY reads 1 when pressed | Pass (2026-11-18) |
+| `w`: BOOT reads 1 when pressed | Pass (2026-11-18) |
 | KEY wakes from deep sleep (modes 1, 2, 4) | |
 | `b` matches a multimeter on the cell (± 0.05 V) | |
 | PWR long press: board fully off? current with PWR off | |
@@ -74,6 +74,8 @@ Battery life at 2500 mAh: 1.0 mA ≈ 104 days, 1.5 mA ≈ 69 days. ADR-0013 targ
 3. Run `w`. Note the untouched raw value, the value with a finger on the front skin, and with a palm. On the S3 the value **rises** on touch.
 4. Repeat on battery only (USB unplugged changes the ground reference); watch via a short USB session afterwards, or note the wake behaviour.
 5. Set a deep-sleep threshold with `t <n>` (for the S3 this is a delta above the benchmark; start at half the measured finger delta). Run mode 1 and check that a touch wakes it but a hand nearby doesn't.
+
+Bare-wire check (2026-11-18, USB powered, paper clip held against the base of each pin): untouched 25.7k-27.1k with ±20 noise; touched +117k to +433k (GPIO1), +494k to +1.05M (GPIO2), +216k to +250k (GPIO3). The pad next to a touched one drifts up to +2k (crosstalk from the hand and wires).
 
 | Skin | Untouched | Finger | Delta | Wakes from deep sleep at threshold | Notes |
 | --- | --- | --- | --- | --- | --- |

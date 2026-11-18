@@ -11,9 +11,11 @@
 //   4  deep sleep, panel off (sleep-in): baseline without the screen
 //   w  watch inputs: touch GPIO1/2/3 raw values, KEY (18), BOOT (0), battery
 //   t <n>  touch wake on GPIO1 with threshold n (0 = off)
+//   a <n>  auto-start mode n 20 s after power-on, saved in flash (0 = off)
 //   b  battery voltage      d  redraw test screen      h  help
 // Press KEY (GPIO18) to leave a sleep mode and get back to the menu.
 #include <Arduino.h>
+#include <Preferences.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
@@ -46,6 +48,12 @@ RTC_DATA_ATTR RtcState g_rtc;
 constexpr uint32_t kMagic = 0x1C0FFEE5;
 
 Rlcd g_lcd;
+
+// Auto-start lets the current test run with USB unplugged: the mode is saved in
+// flash and starts kAutoDelayMs after power-on unless a serial command arrives.
+constexpr uint32_t kAutoDelayMs = 20'000;
+int g_auto_mode = 0;
+uint32_t g_auto_deadline = 0;  // 0 = no countdown
 
 // ---- drawing ----------------------------------------------------------------
 
@@ -130,6 +138,10 @@ void draw_clock_face() {
   snprintf(line, sizeof line, "CYCLE %lu  AWAKE %lu MS", static_cast<unsigned long>(g_rtc.cycles),
            static_cast<unsigned long>(g_rtc.last_awake_ms));
   draw_text(10, 260, line, 4);
+  if (g_auto_deadline != 0) {
+    snprintf(line, sizeof line, "AUTO START MODE %d IN 20 S", g_auto_mode);
+    draw_text(10, 215, line, 3);
+  }
 }
 
 // Write RAM in HPM, then park the panel in the requested power mode.
@@ -203,16 +215,18 @@ void run_light_sleep() {
 
 void print_help() {
   Serial.println(
-      "\ninkwake M0 spike\n"
-      "  1  deep sleep, panel LPM   (exit gate case)\n"
-      "  2  deep sleep, panel HPM\n"
-      "  3  light sleep, panel LPM\n"
-      "  4  deep sleep, panel off\n"
-      "  w  watch inputs (any key stops)\n"
-      "  t <n>  touch wake on GPIO1, threshold n (0 = off)\n"
-      "  b  battery    d  redraw    h  help\n"
+      "\r\ninkwake M0 spike\r\n"
+      "  1  deep sleep, panel LPM   (exit gate case)\r\n"
+      "  2  deep sleep, panel HPM\r\n"
+      "  3  light sleep, panel LPM\r\n"
+      "  4  deep sleep, panel off\r\n"
+      "  w  watch inputs (any key stops)\r\n"
+      "  t <n>  touch wake on GPIO1, threshold n (0 = off)\r\n"
+      "  a <n>  auto-start mode n 20 s after power-on (0 = off)\r\n"
+      "  b  battery    d  redraw    h  help\r\n"
       "KEY wakes back to this menu.");
-  Serial.printf("touch wake threshold: %lu\n", static_cast<unsigned long>(g_rtc.touch_threshold));
+  Serial.printf("touch wake threshold: %lu\r\n", static_cast<unsigned long>(g_rtc.touch_threshold));
+  Serial.printf("auto-start mode: %d\r\n", g_auto_mode);
 }
 
 void watch_inputs() {
@@ -225,7 +239,7 @@ void watch_inputs() {
       Serial.printf("T%d %7lu %+7ld  ", kTouchPins[i], static_cast<unsigned long>(v),
                     static_cast<long>(v) - static_cast<long>(base[i]));
     }
-    Serial.printf("KEY %d BOOT %d  %.2fV\n", !digitalRead(kKeyPin), !digitalRead(kBootPin),
+    Serial.printf("KEY %d BOOT %d  %.2fV\r\n", !digitalRead(kKeyPin), !digitalRead(kBootPin),
                   battery_volts());
     delay(100);
   }
@@ -236,7 +250,7 @@ void start_mode(Mode m) {
   g_rtc.mode = m;
   g_rtc.cycles = 0;
   g_rtc.last_awake_ms = 0;
-  Serial.printf("%s: measure now. Press KEY to return.\n", mode_name(m));
+  Serial.printf("%s: measure now. Press KEY to return.\r\n", mode_name(m));
   if (m == kLightLpm) {
     run_light_sleep();
     return;
@@ -271,11 +285,21 @@ void handle_line(const String& line) {
       break;
     case 't':
       g_rtc.touch_threshold = line.substring(1).toInt();
-      Serial.printf("touch wake threshold %lu\n",
+      Serial.printf("touch wake threshold %lu\r\n",
                     static_cast<unsigned long>(g_rtc.touch_threshold));
       break;
+    case 'a': {
+      const long n = line.substring(1).toInt();
+      g_auto_mode = (n >= kDeepLpm && n <= kDeepOff) ? static_cast<int>(n) : 0;
+      Preferences prefs;
+      prefs.begin("spike", false);
+      prefs.putInt("auto", g_auto_mode);
+      prefs.end();
+      Serial.printf("auto-start mode %d (saved)\r\n", g_auto_mode);
+      break;
+    }
     case 'b':
-      Serial.printf("battery %.3f V\n", battery_volts());
+      Serial.printf("battery %.3f V\r\n", battery_volts());
       break;
     case 'd':
       draw_clock_face();
@@ -311,9 +335,15 @@ void setup() {
   delay(1500);  // give USB CDC time to enumerate
   const Mode was = g_rtc.mode;
   g_rtc.mode = kMenu;
-  Serial.printf("wake cause %d, previous mode %s, %lu cycles, last awake %lu ms\n", cause,
+  Serial.printf("wake cause %d, previous mode %s, %lu cycles, last awake %lu ms\r\n", cause,
                 mode_name(was), static_cast<unsigned long>(g_rtc.cycles),
                 static_cast<unsigned long>(g_rtc.last_awake_ms));
+  Preferences prefs;
+  prefs.begin("spike", true);
+  g_auto_mode = prefs.getInt("auto", 0);
+  prefs.end();
+  if (g_auto_mode != 0) g_auto_deadline = millis() + kAutoDelayMs;
+
   g_lcd.begin(true);
   draw_clock_face();
   show(false);
@@ -321,7 +351,12 @@ void setup() {
 }
 
 void loop() {
+  if (g_auto_deadline != 0 && static_cast<int32_t>(millis() - g_auto_deadline) >= 0) {
+    g_auto_deadline = 0;
+    start_mode(static_cast<Mode>(g_auto_mode));
+  }
   if (Serial.available()) {
+    g_auto_deadline = 0;  // any command cancels the countdown
     String line = Serial.readStringUntil('\n');
     line.trim();
     handle_line(line);
