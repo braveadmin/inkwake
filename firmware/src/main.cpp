@@ -36,12 +36,27 @@ namespace {
 
 constexpr int kKeyPin = 18;  // active low, external pull-up; wakes from deep sleep
 constexpr int kAmpPin = 46;  // speaker amp enable, held low in sleep
-constexpr uint32_t kMagic = 0x1A7E0019;
+constexpr int kBatPin = 4;   // battery sense, 1:3 divider
+constexpr uint32_t kMagic = 0x1A7E001A;
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
 // deep-sleep clock (internal RC, a few % off) never fires it before the minute.
 constexpr uint32_t kFallbackUs = 10'000'000;
+
+// One deep-sleep wake (or power-on), for diagnosing battery runs afterwards
+// over serial (`log`).
+struct WakeEntry {
+  uint32_t when;    // system time after the RTC sync (Unix, UTC)
+  char cause;       // R = RTC interrupt, T = fallback timer, K = KEY, P = power-on
+  uint8_t rtc;      // rtc::Status of the sync
+  uint8_t regions;  // regions redrawn, kFullRefresh for a full refresh
+  uint8_t pad;
+  uint16_t awake_ms;  // from boot to the display update done
+  uint16_t bat_mv;
+};
+constexpr size_t kLogLen = 32;
+constexpr uint8_t kFullRefresh = 0xFF;
 
 struct RtcState {
   uint32_t magic;
@@ -52,6 +67,8 @@ struct RtcState {
   uint32_t rtc_errors;   // wakes where the RTC could not be read
   bool int_pullup;       // GPIO15 has no external pull-up: use the internal one in sleep
   bool time_set;         // false while the RTC reports its time lost
+  uint32_t log_count;    // entries ever written; the newest is at (log_count - 1) % kLogLen
+  WakeEntry log[kLogLen];
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -124,17 +141,34 @@ void set_clock_from_build() {
 }
 
 // Redraws the face. Full refresh on demand and once an hour, otherwise only
-// the fields that changed since the last write.
-void update_display(bool full) {
+// the fields that changed since the last write. Returns the regions written,
+// kFullRefresh for a full refresh.
+uint8_t update_display(bool full) {
   const FaceState s = current_face();
   render_face(g_fb, s);
+  uint8_t n = kFullRefresh;
   if (full || s.minute == 0) {
     g_lcd.refresh_full(g_fb);
   } else {
     Rect dirty[kFaceRegions];
-    g_lcd.refresh(g_fb, dirty, face_dirty(g_rtc.shown, s, dirty));
+    n = static_cast<uint8_t>(face_dirty(g_rtc.shown, s, dirty));
+    g_lcd.refresh(g_fb, dirty, n);
   }
   g_rtc.shown = s;
+  return n;
+}
+
+uint16_t battery_mv() { return static_cast<uint16_t>(analogReadMilliVolts(kBatPin) * 3); }
+
+void log_wake(char cause, rtc::Status rtc_status, uint8_t regions) {
+  WakeEntry& e = g_rtc.log[g_rtc.log_count++ % kLogLen];
+  e.when = static_cast<uint32_t>(time(nullptr));
+  e.cause = cause;
+  e.rtc = static_cast<uint8_t>(rtc_status);
+  e.regions = regions;
+  e.pad = 0;
+  e.awake_ms = static_cast<uint16_t>(millis());
+  e.bat_mv = battery_mv();
 }
 
 // INT is open drain. Checks for an external pull-up by pulling the pin down
@@ -181,6 +215,7 @@ void print_help() {
       "\r\ninkwake clock (M2, #18)\r\n"
       "  set YYYY-MM-DD HH:MM   set the clock and the RTC (no timezone yet: enter local time)\r\n"
       "  rtc                    RTC time and wake counters\r\n"
+      "  log                    last 32 wakes: time, cause, redraw, awake time, battery\r\n"
       "  full                   full redraw\r\n"
       "  box                    partial-refresh check: black square in the top-left corner\r\n"
       "  help\r\n"
@@ -218,6 +253,28 @@ void print_rtc() {
                        : "external pull-up found");
 }
 
+void print_log() {
+  const uint32_t n = g_rtc.log_count < kLogLen ? g_rtc.log_count : kLogLen;
+  Serial.printf("last %lu of %lu wakes (R rtc, T timer, K key, P power-on), battery now %u mV\r\n",
+                static_cast<unsigned long>(n), static_cast<unsigned long>(g_rtc.log_count),
+                battery_mv());
+  for (uint32_t i = g_rtc.log_count - n; i < g_rtc.log_count; ++i) {
+    const WakeEntry& e = g_rtc.log[i % kLogLen];
+    print_stamp(" ", static_cast<time_t>(e.when));
+    char redraw[12];
+    if (e.regions == kFullRefresh) {
+      snprintf(redraw, sizeof redraw, "full");
+    } else {
+      snprintf(redraw, sizeof redraw, "%u regions", e.regions);
+    }
+    Serial.printf("  %c  %-10s %5u ms  %4u mV%s%s\r\n", e.cause, redraw, e.awake_ms, e.bat_mv,
+                  e.rtc == static_cast<uint8_t>(rtc::Status::Ok) ? "" : "  rtc: ",
+                  e.rtc == static_cast<uint8_t>(rtc::Status::Ok)
+                      ? ""
+                      : rtc::status_name(static_cast<rtc::Status>(e.rtc)));
+  }
+}
+
 void handle_line(const String& line) {
   int y, mo, d, h, mi;
   if (line.startsWith("set ") &&
@@ -227,6 +284,8 @@ void handle_line(const String& line) {
     update_display(true);
   } else if (line == "rtc") {
     print_rtc();
+  } else if (line == "log") {
+    print_log();
   } else if (line == "full") {
     update_display(true);
     Serial.print("full redraw\r\n");
@@ -266,18 +325,34 @@ void setup() {
     rtc_status = sync_from_rtc();
     if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
     g_lcd.begin(false);
-    update_display(false);
+    const uint8_t regions = update_display(false);
+    log_wake(key                               ? 'K'
+             : cause == ESP_SLEEP_WAKEUP_TIMER ? 'T'
+             : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
+                                               : '?',
+             rtc_status, regions);
     // Minute tick: back to sleep at once. Looking for a USB host costs time
     // on every wake; to use serial after plugging in, press KEY.
     if (!key) deep_sleep();
   } else {
     rtc::arm_minute_interrupt();  // release INT before probing it
-    g_rtc = RtcState{kMagic, FaceState{}, 0, 0, 0, 0, int_needs_pullup(), false};
+    const bool pullup = int_needs_pullup();
+    // Keep the wake log across resets (not power loss) when it is intact.
+    const bool keep_log = g_rtc.magic == kMagic;
+    const uint32_t log_count = keep_log ? g_rtc.log_count : 0;
+    WakeEntry saved_log[kLogLen] = {};
+    if (keep_log) memcpy(saved_log, g_rtc.log, sizeof saved_log);
+    g_rtc = {};
+    g_rtc.magic = kMagic;
+    g_rtc.int_pullup = pullup;
+    g_rtc.log_count = log_count;
+    memcpy(g_rtc.log, saved_log, sizeof saved_log);
     rtc_status = sync_from_rtc();
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
     g_lcd.begin(true);
     update_display(true);
+    log_wake('P', rtc_status, kFullRefresh);
   }
 
   // Power-on or KEY: stay awake while a USB host is connected. isPlugged()
