@@ -8,7 +8,7 @@ Each feature is worked in its own session, tracked as a GitHub issue (braveadmin
 - M0 hardware spike: partly done, rest deferred to a hardware phase before M7 (issue #17, docs/m0-spike.md).
   Confirmed: display, KEY, BOOT, battery sense, touch on bare pins; deep sleep with the panel in LPM and DC/CS/RST held keeps the image and redraws without flicker. Not measured: sleep current, PWR circuit, touch through plastic.
 - M1: milestones, labels and issues created with scripts/bootstrap-github.sh (re-runnable, skips existing). Open: #21 pin the pioarduino platform release.
-- M2 clock core in progress. #18 display driver + partial refresh + clock face: done and verified on the board 2026-11-18 (`box` top-left, `set`, in-place minute updates, battery deep sleep). Lives on `m0-spike`; the issue closes when PR #1 merges. #19 PCF85063 RTC: implemented, CI green, waiting for board verification (minute-interrupt wake, pull-up probe on GPIO15, power-cycle survival). Next: #12 F11 room temperature, #20 Wi-Fi provisioning, #13 F12 NTP + timezone.
+- M2 clock core in progress. #18 display driver + partial refresh + clock face: done and verified on the board 2026-11-18 (`box` top-left, `set`, in-place minute updates, battery deep sleep). Lives on `m0-spike`; the issue closes when PR #1 merges. #19 PCF85063 RTC: verified on the board 2026-11-18 (minute-interrupt wake, no fallback-timer wakes, boot write sticks after the crystal starts); power-cycle survival with the PWR switch still to test. Next: #12 F11 room temperature, #20 Wi-Fi provisioning, #13 F12 NTP + timezone.
 - Device firmware (env `device`) is now the clock: deep sleep between minutes on battery, stays awake with serial commands (`set YYYY-MM-DD HH:MM`, `rtc`, `full`, `box`) while a USB host is plugged in. Time comes from the PCF85063 (lib/rtc codec, src/rtc driver): its minute interrupt on GPIO15 wakes the board (ext1, with KEY), each wake copies RTC time into the system clock, a timer 10 s after the minute is the fallback. RTC holds displayed time (UTC, no TZ until #13); build time is written to it when it lost power.
 - Shell work S1/S2 (#14, #15) moved to the hardware phase before M7.
 
@@ -41,7 +41,7 @@ Full map: hardware/wiring.md. Source of truth for Waveshare details: github.com/
 | KEY / BOOT | GPIO18 / GPIO0, active low, external pull-ups; KEY wakes from deep sleep via ext1 |
 | PWR | hardware switch, no GPIO (circuit not checked) |
 | Battery sense | GPIO4 (ADC1_CH3), 1:3 divider |
-| I2C (SHTC3, PCF85063) | SDA 13, SCL 14, PCF85063 at 0x51; RTC interrupt GPIO15, open drain, used as minute wake (on-board pull-up not yet confirmed: firmware probes it at boot, `rtc` shows the result) |
+| I2C (SHTC3, PCF85063) | SDA 13, SCL 14, PCF85063 at 0x51; RTC interrupt GPIO15, open drain, used as minute wake; **no external pull-up** on the board, the internal RTC pull-up in deep sleep works (verified 2026-11-18). RTC loses its time when the board is unpowered (no backup cell); after power-up its crystal needs up to ~2 s before a time write sticks |
 | Speaker amp enable | GPIO46, hold low in sleep |
 | Touch | GPIO1/2/3: idle ~26k, bare finger +100k..1M, noise ±20, neighbour crosstalk up to +2k. S3 deep sleep wakes on one touch channel only (to confirm) |
 | Free header pins | GPIO1, 2, 3, 17 (LEDs), 43/44; GPIO18 is KEY |
