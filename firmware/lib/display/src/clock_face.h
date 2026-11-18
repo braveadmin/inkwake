@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Clock face for the 400x300 panel: date, HH:MM, room temperature.
+// Each field has a fixed screen region so a change refreshes only that region.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+#include "framebuffer.h"
+
+namespace inkwake {
+
+constexpr int16_t kNoTemp = INT16_MIN;  // no sensor reading yet
+
+struct FaceState {
+  uint8_t hour = 0;           // 0-23
+  uint8_t minute = 0;         // 0-59
+  uint8_t weekday = 0;        // 0 = Monday ... 6 = Sunday
+  uint8_t day = 1;            // 1-31
+  uint8_t month = 1;          // 1-12
+  int16_t temp_dc = kNoTemp;  // room temperature in tenths of a degree C
+
+  bool operator==(const FaceState& o) const {
+    return hour == o.hour && minute == o.minute && weekday == o.weekday && day == o.day &&
+           month == o.month && temp_dc == o.temp_dc;
+  }
+  bool operator!=(const FaceState& o) const { return !(*this == o); }
+};
+
+enum class FaceRegion : uint8_t { HourTens, HourOnes, MinuteTens, MinuteOnes, Date, Temp, Count };
+constexpr size_t kFaceRegions = static_cast<size_t>(FaceRegion::Count);
+
+// Screen area a field may draw into, inside the panel.
+Rect face_region(FaceRegion region);
+
+// Clears the framebuffer and draws the whole face.
+void render_face(Framebuffer& fb, const FaceState& s);
+
+// Regions whose content differs between two states, written to `out`
+// (room for kFaceRegions). Returns how many.
+size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out);
+
+// "Wednesday 18 November". `n` >= 32 is always enough.
+void format_date(const FaceState& s, char* buf, size_t n);
+// "21.5 °C", "-3.0 °C", or "--.- °C" without a reading (UTF-8).
+void format_temp(int16_t temp_dc, char* buf, size_t n);
+
+}  // namespace inkwake
