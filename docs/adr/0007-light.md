@@ -5,7 +5,7 @@
 
 ## Decision
 
-Warm-white LEDs powered from the 18650, PWM through a logic-level N-MOSFET on GPIO17. Upgrade path: SK6812 RGBW ring with a 5 V boost converter enabled from GPIO18.
+Warm-white LEDs powered from the 18650, PWM through a logic-level N-MOSFET on GPIO17. Upgrade path: SK6812 RGBW ring with a 5 V boost converter enabled from a free header pin (GPIO43 or 44; GPIO18 is the KEY button).
 
 ## Alternatives rejected
 

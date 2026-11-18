@@ -1,6 +1,6 @@
 # Wiring: Waveshare ESP32-S3-RLCD-4.2
 
-From Waveshare's pin definition image. KEY/PWR GPIOs and battery sensing still to confirm in the schematic.
+From Waveshare's pin definition image and demo code (docs/m0-spike.md). PWR is a hardware power switch with no GPIO; its circuit is still to confirm.
 
 ## Used on board
 
@@ -12,7 +12,9 @@ From Waveshare's pin definition image. KEY/PWR GPIOs and battery sensing still t
 | I2S (ES8311 + ES7210): DSDIN, SCLK, ASDOUT, MCLK, LRCK | 8, 9, 10, 16, 45 |
 | Speaker amp enable (PA_CTRL) | 46 |
 | TF card: CMD, CLK, DATA | 21, 38, 39 (card detect on 17 not connected) |
-| BOOT button | 0 |
+| BOOT button (active low) | 0 |
+| KEY button (active low, external pull-up) | 18 |
+| Battery sense, ADC1_CH3, 1:3 divider | 4 |
 
 ## 2x8 header allocation
 
@@ -20,9 +22,9 @@ From Waveshare's pin definition image. KEY/PWR GPIOs and battery sensing still t
 | --- | --- |
 | GPIO1 (touch) | top pad: snooze / dismiss |
 | GPIO2 (touch) | side pad: glow / web UI |
-| GPIO3 (touch) | spare: third pad or battery divider |
+| GPIO3 (touch) | spare: third pad (battery sense is on-board, GPIO4) |
 | GPIO17 | sunrise LEDs, PWM to MOSFET gate |
-| GPIO18 | spare: boost enable for the optional RGBW ring (unless KEY uses it) |
+| GPIO18 | taken: KEY button. RGBW ring boost enable needs another pin (GPIO3 or 43/44) |
 | GPIO13 / 14 | shared I2C, optional external SHT40 |
 | GPIO43 / 44 | UART0, spare |
 | GPIO0, 19 / 20 | leave: BOOT and USB |

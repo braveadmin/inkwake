@@ -13,4 +13,4 @@ M5Stack PaperS3; FeatherS3 + e-ink as lead; generic DevKitC.
 
 ## Rationale
 
-One board carries nearly every peripheral the clock needs for about USD 27 including battery and speaker. The 2x8 header leaves GPIO1, 2, 3, 17, 18 free; GPIO1-3 are touch-capable. Open: KEY/PWR GPIOs and a battery-sense pin, to confirm in the schematic.
+One board carries nearly every peripheral the clock needs for about USD 27 including battery and speaker. The 2x8 header leaves GPIO1, 2, 3, 17 free (GPIO18 is also on the header but wired to KEY); GPIO1-3 are touch-capable. KEY is GPIO18 and battery sense GPIO4 (1:3 divider), per Waveshare's demo code; PWR is a hardware switch (docs/m0-spike.md).
