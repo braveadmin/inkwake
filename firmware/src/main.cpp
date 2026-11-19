@@ -37,7 +37,7 @@ namespace {
 constexpr int kKeyPin = 18;  // active low, external pull-up; wakes from deep sleep
 constexpr int kAmpPin = 46;  // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;   // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E001B;
+constexpr uint32_t kMagic = 0x1A7E001A;
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -47,19 +47,16 @@ constexpr uint32_t kFallbackUs = 10'000'000;
 // One deep-sleep wake (or power-on), for diagnosing battery runs afterwards
 // over serial (`log`).
 struct WakeEntry {
-  uint32_t when;      // system time after the RTC sync (Unix, UTC)
-  char cause;         // R = RTC interrupt, T = fallback timer, K = KEY, P = power-on
-  uint8_t rtc;        // rtc::Status of the sync
-  uint8_t regions;    // regions redrawn, kFullRefresh / kPanelRestart
-  uint8_t te_ms;      // wait for the panel's TE pulse, kNoTe if none
+  uint32_t when;    // system time after the RTC sync (Unix, UTC)
+  char cause;       // R = RTC interrupt, T = fallback timer, K = KEY, P = power-on
+  uint8_t rtc;      // rtc::Status of the sync
+  uint8_t regions;  // regions redrawn, kFullRefresh for a full refresh
+  uint8_t pad;
   uint16_t awake_ms;  // from boot to the display update done
   uint16_t bat_mv;
 };
 constexpr size_t kLogLen = 32;
 constexpr uint8_t kFullRefresh = 0xFF;
-constexpr uint8_t kPanelRestart = 0xFE;  // TE was quiet: panel reset + init + full refresh
-constexpr uint8_t kNoTe = 0xFF;
-constexpr uint32_t kTeTimeoutMs = 80;  // a few frames in high power mode
 
 struct RtcState {
   uint32_t magic;
@@ -70,9 +67,7 @@ struct RtcState {
   uint32_t rtc_errors;   // wakes where the RTC could not be read
   bool int_pullup;       // GPIO15 has no external pull-up: use the internal one in sleep
   bool time_set;         // false while the RTC reports its time lost
-  bool te_ok;            // TE pulsed after the power-on init, so a quiet TE means trouble
-  uint32_t panel_restarts;
-  uint32_t log_count;  // entries ever written; the newest is at (log_count - 1) % kLogLen
+  uint32_t log_count;    // entries ever written; the newest is at (log_count - 1) % kLogLen
   WakeEntry log[kLogLen];
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
@@ -165,13 +160,13 @@ uint8_t update_display(bool full) {
 
 uint16_t battery_mv() { return static_cast<uint16_t>(analogReadMilliVolts(kBatPin) * 3); }
 
-void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, int te_ms) {
+void log_wake(char cause, rtc::Status rtc_status, uint8_t regions) {
   WakeEntry& e = g_rtc.log[g_rtc.log_count++ % kLogLen];
   e.when = static_cast<uint32_t>(time(nullptr));
   e.cause = cause;
   e.rtc = static_cast<uint8_t>(rtc_status);
   e.regions = regions;
-  e.te_ms = te_ms < 0 || te_ms >= kNoTe ? kNoTe : static_cast<uint8_t>(te_ms);
+  e.pad = 0;
   e.awake_ms = static_cast<uint16_t>(millis());
   e.bat_mv = battery_mv();
 }
@@ -220,10 +215,8 @@ void print_help() {
       "\r\ninkwake clock (M2, #18)\r\n"
       "  set YYYY-MM-DD HH:MM   set the clock and the RTC (no timezone yet: enter local time)\r\n"
       "  rtc                    RTC time and wake counters\r\n"
-      "  log                    last 32 wakes: time, cause, redraw, panel TE, awake time, "
-      "battery\r\n"
+      "  log                    last 32 wakes: time, cause, redraw, awake time, battery\r\n"
       "  full                   full redraw\r\n"
-      "  init                   restart the panel (reset + init) and redraw\r\n"
       "  box                    partial-refresh check: black square in the top-left corner\r\n"
       "  help\r\n"
       "Unplug USB to run on battery with deep sleep between minutes.\r\n");
@@ -253,14 +246,11 @@ void print_rtc() {
   print_time();
   Serial.printf(
       "wakes %lu: rtc interrupt %lu, fallback timer %lu, rtc read errors %lu\r\n"
-      "GPIO15 (RTC INT): %s\r\n"
-      "panel TE check: %s, panel restarts %lu\r\n",
+      "GPIO15 (RTC INT): %s\r\n",
       static_cast<unsigned long>(g_rtc.wakes), static_cast<unsigned long>(g_rtc.rtc_wakes),
       static_cast<unsigned long>(g_rtc.timer_wakes), static_cast<unsigned long>(g_rtc.rtc_errors),
       g_rtc.int_pullup ? "no external pull-up, internal one used in sleep"
-                       : "external pull-up found",
-      g_rtc.te_ok ? "on" : "off (no TE pulse after power-on)",
-      static_cast<unsigned long>(g_rtc.panel_restarts));
+                       : "external pull-up found");
 }
 
 void print_log() {
@@ -271,22 +261,14 @@ void print_log() {
   for (uint32_t i = g_rtc.log_count - n; i < g_rtc.log_count; ++i) {
     const WakeEntry& e = g_rtc.log[i % kLogLen];
     print_stamp(" ", static_cast<time_t>(e.when));
-    char redraw[16];
+    char redraw[12];
     if (e.regions == kFullRefresh) {
       snprintf(redraw, sizeof redraw, "full");
-    } else if (e.regions == kPanelRestart) {
-      snprintf(redraw, sizeof redraw, "PANEL RESTART");
     } else {
       snprintf(redraw, sizeof redraw, "%u regions", e.regions);
     }
-    char te[12];
-    if (e.te_ms == kNoTe) {
-      snprintf(te, sizeof te, "te none");
-    } else {
-      snprintf(te, sizeof te, "te %2u ms", e.te_ms);
-    }
-    Serial.printf("  %c  %-13s %-8s %5u ms  %4u mV%s%s\r\n", e.cause, redraw, te, e.awake_ms,
-                  e.bat_mv, e.rtc == static_cast<uint8_t>(rtc::Status::Ok) ? "" : "  rtc: ",
+    Serial.printf("  %c  %-10s %5u ms  %4u mV%s%s\r\n", e.cause, redraw, e.awake_ms, e.bat_mv,
+                  e.rtc == static_cast<uint8_t>(rtc::Status::Ok) ? "" : "  rtc: ",
                   e.rtc == static_cast<uint8_t>(rtc::Status::Ok)
                       ? ""
                       : rtc::status_name(static_cast<rtc::Status>(e.rtc)));
@@ -304,12 +286,6 @@ void handle_line(const String& line) {
     print_rtc();
   } else if (line == "log") {
     print_log();
-  } else if (line == "init") {
-    Serial.printf("TE before: %d ms (-1 = none)\r\n", g_lcd.te_wait_ms(kTeTimeoutMs));
-    g_lcd.begin(true);
-    const int te = g_lcd.te_wait_ms(kTeTimeoutMs);
-    update_display(true);
-    Serial.printf("panel restarted; TE after: %d ms\r\n", te);
   } else if (line == "full") {
     update_display(true);
     Serial.print("full redraw\r\n");
@@ -349,18 +325,12 @@ void setup() {
     rtc_status = sync_from_rtc();
     if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
     g_lcd.begin(false);
-    const int te = g_lcd.te_wait_ms(kTeTimeoutMs);
-    const bool restart = g_rtc.te_ok && te < 0;
-    if (restart) {
-      g_rtc.panel_restarts++;
-      g_lcd.begin(true);
-    }
-    const uint8_t regions = restart ? (update_display(true), kPanelRestart) : update_display(false);
+    const uint8_t regions = update_display(false);
     log_wake(key                               ? 'K'
              : cause == ESP_SLEEP_WAKEUP_TIMER ? 'T'
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
                                                : '?',
-             rtc_status, regions, te);
+             rtc_status, regions);
     // Minute tick: back to sleep at once. Looking for a USB host costs time
     // on every wake; to use serial after plugging in, press KEY.
     if (!key) deep_sleep();
@@ -381,10 +351,8 @@ void setup() {
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
     g_lcd.begin(true);
-    const int te = g_lcd.te_wait_ms(kTeTimeoutMs);
-    g_rtc.te_ok = te >= 0;
     update_display(true);
-    log_wake('P', rtc_status, kFullRefresh, te);
+    log_wake('P', rtc_status, kFullRefresh);
   }
 
   // Power-on or KEY: stay awake while a USB host is connected. isPlugged()
