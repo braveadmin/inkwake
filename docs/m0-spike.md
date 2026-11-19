@@ -93,5 +93,6 @@ Status 2026-11-18: partly done, current measurement deferred.
 - Done: display, KEY, BOOT, battery sense (GPIO4, reads 4.14 V on USB), touch on bare pins (GPIO1-3).
 - Deep sleep with the panel in LPM and DC/CS/RST held keeps the image, redraws each minute without flicker. Firmware assumes this strategy (deep sleep + held pins).
 - Deferred to the hardware phase before v1.0: sleep current (the meter used had no fuse in its mA range and was damaged; needs a fused meter with a µA/mA input), PWR circuit, touch through the printed test plate.
+- To investigate in the hardware phase: an RTC backup cell on J7 (`RTC_BAT`, rechargeable ML1220 only, never CR1220). It would keep the time through PWR off and a flat 18650, so the M2 gate could go back to "correct time after power cycle". Check the connector type and polarity on the board, how the cell is charged (straight from 3V3 through a B5819, no current limit), and its effect on sleep current. Not fitted for now (decided 2026-11-19).
 
 Still to fill in then: gate pass/fail, pad skin thickness, and updates to ADR-0013 and ADR-0015.
