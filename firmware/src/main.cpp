@@ -217,6 +217,8 @@ void print_help() {
       "  rtc                    RTC time and wake counters\r\n"
       "  log                    last 32 wakes: time, cause, redraw, awake time, battery\r\n"
       "  full                   full redraw\r\n"
+      "  init                   restart the panel (reset + init) and redraw\r\n"
+      "  sleep                  deep sleep now, also on USB power (KEY wakes and stays awake)\r\n"
       "  box                    partial-refresh check: black square in the top-left corner\r\n"
       "  help\r\n"
       "Unplug USB to run on battery with deep sleep between minutes.\r\n");
@@ -286,6 +288,17 @@ void handle_line(const String& line) {
     print_rtc();
   } else if (line == "log") {
     print_log();
+  } else if (line == "init") {
+    g_lcd.begin(true);
+    update_display(true);
+    Serial.print("panel restarted and redrawn\r\n");
+  } else if (line == "sleep") {
+    // Minute wakes go straight back to sleep whatever the power source, so
+    // this runs the battery sleep cycle on USB power. KEY stays awake on USB.
+    Serial.print("deep sleep; the terminal will disconnect. Press KEY to come back.\r\n");
+    Serial.flush();
+    delay(100);
+    deep_sleep();
   } else if (line == "full") {
     update_display(true);
     Serial.print("full redraw\r\n");

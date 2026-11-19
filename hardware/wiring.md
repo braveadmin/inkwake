@@ -1,6 +1,6 @@
 # Wiring: Waveshare ESP32-S3-RLCD-4.2
 
-From Waveshare's pin definition image and demo code (docs/m0-spike.md). PWR is a hardware power switch with no GPIO; its circuit is still to confirm.
+From Waveshare's pin definition image and demo code (docs/m0-spike.md). PWR is a push button on an ECJ23001 on/off controller (U3) that switches the whole 3.3 V system; no GPIO. Power path details: CLAUDE.md hardware facts and the Waveshare schematic.
 
 ## Used on board
 
@@ -8,7 +8,9 @@ From Waveshare's pin definition image and demo code (docs/m0-spike.md). PWR is a
 | --- | --- |
 | RLCD (ST7305): DS, TE, SCK, DIN, CS, RESET | 5, 6, 11, 12, 40, 41 |
 | I2C (SHTC3, PCF85063) | SDA 13, SCL 14 |
-| RTC interrupt | 15 |
+| RTC interrupt (open drain, no board pull-up) | 15 |
+| RTC backup cell connector J7 (`RTC_BAT`, rechargeable ML1220 only) | - |
+| RLCD TE (sits high, no pulses seen) | 6 |
 | I2S (ES8311 + ES7210): DSDIN, SCLK, ASDOUT, MCLK, LRCK | 8, 9, 10, 16, 45 |
 | Speaker amp enable (PA_CTRL) | 46 |
 | TF card: CMD, CLK, DATA | 21, 38, 39 (card detect on 17 not connected) |
