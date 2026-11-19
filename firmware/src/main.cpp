@@ -224,6 +224,7 @@ void print_help() {
       "battery\r\n"
       "  full                   full redraw\r\n"
       "  init                   restart the panel (reset + init) and redraw\r\n"
+      "  te                     panel TE pin check (1 s in each power mode)\r\n"
       "  box                    partial-refresh check: black square in the top-left corner\r\n"
       "  help\r\n"
       "Unplug USB to run on battery with deep sleep between minutes.\r\n");
@@ -304,6 +305,23 @@ void handle_line(const String& line) {
     print_rtc();
   } else if (line == "log") {
     print_log();
+  } else if (line == "te") {
+    // Is TE driven at all? A floating pin follows the internal pulls.
+    pinMode(St7305::kTe, INPUT_PULLDOWN);
+    delay(2);
+    const int with_down = digitalRead(St7305::kTe);
+    pinMode(St7305::kTe, INPUT_PULLUP);
+    delay(2);
+    const int with_up = digitalRead(St7305::kTe);
+    Serial.printf("TE (GPIO%d) with pull-down %d, with pull-up %d%s\r\n", St7305::kTe, with_down,
+                  with_up,
+                  with_down == 0 && with_up == 1 ? "  <- follows the pulls: floating?" : "");
+    for (const bool lpm : {false, true}) {
+      const St7305::TeStats st = g_lcd.te_sample(lpm, 1000);
+      Serial.printf("%s mode, 1 s: %lu pulses, high %lu of %lu samples\r\n", lpm ? "low " : "high",
+                    static_cast<unsigned long>(st.rising), static_cast<unsigned long>(st.high),
+                    static_cast<unsigned long>(st.samples));
+    }
   } else if (line == "init") {
     Serial.printf("TE before: %d ms (-1 = none)\r\n", g_lcd.te_wait_ms(kTeTimeoutMs));
     g_lcd.begin(true);

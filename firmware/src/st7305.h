@@ -39,6 +39,12 @@ class St7305 {
   // begin(true).
   int te_wait_ms(uint32_t timeout_ms);
 
+  // Diagnostic: samples TE for `ms` in the given power mode (left in that mode).
+  struct TeStats {
+    uint32_t samples, high, rising;
+  };
+  TeStats te_sample(bool low_power, uint32_t ms);
+
  private:
   void cmd(uint8_t c);
   void cmd_data(uint8_t c, const uint8_t* d, size_t n);

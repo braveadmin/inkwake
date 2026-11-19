@@ -55,6 +55,22 @@ void St7305::hold_pins(bool hold) {
 #endif
 }
 
+St7305::TeStats St7305::te_sample(bool low_power, uint32_t ms) {
+  pinMode(kTe, INPUT);
+  power_mode(low_power);
+  TeStats st{0, 0, 0};
+  int last = digitalRead(kTe);
+  const uint32_t t0 = millis();
+  while (millis() - t0 < ms) {
+    const int now = digitalRead(kTe);
+    ++st.samples;
+    if (now == HIGH) ++st.high;
+    if (now == HIGH && last == LOW) ++st.rising;
+    last = now;
+  }
+  return st;
+}
+
 int St7305::te_wait_ms(uint32_t timeout_ms) {
   pinMode(kTe, INPUT);
   power_mode(false);
