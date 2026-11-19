@@ -55,9 +55,21 @@ void St7305::hold_pins(bool hold) {
 #endif
 }
 
-void St7305::refresh(const Framebuffer& fb, const Rect* rects, size_t n) {
-  if (n == 0) return;
+int St7305::te_wait_ms(uint32_t timeout_ms) {
+  pinMode(kTe, INPUT);
   power_mode(false);
+  int last = digitalRead(kTe);
+  const uint32_t t0 = millis();
+  while (millis() - t0 < timeout_ms) {
+    const int now = digitalRead(kTe);
+    if (now == HIGH && last == LOW) return static_cast<int>(millis() - t0);
+    last = now;
+  }
+  return -1;
+}
+
+void St7305::refresh(const Framebuffer& fb, const Rect* rects, size_t n) {
+  power_mode(false);  // also with n == 0: parks the panel in LPM after te_wait_ms()
   for (size_t i = 0; i < n; ++i) {
     if (rects[i].clipped(Framebuffer::kWidth, Framebuffer::kHeight).empty()) continue;
     write_window(fb, PanelWindow::cover(rects[i], !kNarrowColumns));

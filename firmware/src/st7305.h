@@ -17,6 +17,10 @@ class St7305 {
  public:
   // Pins: SCK 11, MOSI 12, DC 5, CS 40, RST 41 (hardware/wiring.md).
   static constexpr int kSck = 11, kMosi = 12, kDc = 5, kCs = 40, kRst = 41;
+  // Tearing effect output: one pulse per frame while the panel runs (0x35 in
+  // init). Quiet after a controller reset, which leaves it asleep with the
+  // display off: it then ignores new frames while the old image fades slowly.
+  static constexpr int kTe = 6;
 
   // cold = true resets and initialises the panel. After a deep-sleep wake with
   // the pins held, pass false: the panel kept its RAM and is parked in LPM.
@@ -29,6 +33,11 @@ class St7305 {
 
   // Latch DC/CS/RST so the panel keeps its state through deep sleep.
   static void hold_pins(bool hold);
+
+  // Switches to high power mode and waits for a TE pulse. Returns the ms it
+  // took, or -1 after timeout_ms: the controller lost its setup and needs
+  // begin(true).
+  int te_wait_ms(uint32_t timeout_ms);
 
  private:
   void cmd(uint8_t c);
