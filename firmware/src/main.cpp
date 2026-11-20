@@ -57,6 +57,12 @@ constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
 // deep-sleep clock (internal RC, a few % off) never fires it before the minute.
 constexpr uint32_t kFallbackUs = 10'000'000;
+// Fallback timer while the time is not set (#27). The system clock then runs
+// from the build time, unrelated to the RTC's minute, so a timer aimed at the
+// next system minute fired between two RTC ticks: two wakes a minute. Instead
+// it counts from now, longer than a minute plus the RC clock's error, and only
+// fires if the interrupt is missed. The face shows --:--, so timing is moot.
+constexpr uint64_t kUnsetFallbackUs = 70'000'000;
 
 // One deep-sleep wake (or power-on), for diagnosing battery runs afterwards
 // over serial (`log`).
@@ -294,8 +300,10 @@ bool int_needs_pullup() {
 
   timeval tv;
   gettimeofday(&tv, nullptr);
-  const uint64_t us = static_cast<uint64_t>(59 - tv.tv_sec % 60) * 1'000'000 +
-                      (1'000'000 - tv.tv_usec) + (armed ? kFallbackUs : kWakeMarginUs);
+  const uint64_t us = armed && !g_rtc.time_set
+                          ? kUnsetFallbackUs
+                          : static_cast<uint64_t>(59 - tv.tv_sec % 60) * 1'000'000 +
+                                (1'000'000 - tv.tv_usec) + (armed ? kFallbackUs : kWakeMarginUs);
 
   pinMode(kAmpPin, OUTPUT);
   digitalWrite(kAmpPin, LOW);
