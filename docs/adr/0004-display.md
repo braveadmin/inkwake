@@ -14,3 +14,7 @@ Custom-only render layer designed around e-ink.
 ## Rationale
 
 The panel refreshes fast with no ghosting or full-refresh flashes, so a standard UI toolkit fits. Unlike e-ink it stays powered at a small constant draw, covered by the power budget (ADR-0013).
+
+## Update 2026-11-18 (M2, #18)
+
+The M2 clock face does not use LVGL. It draws into a 15 KB framebuffer in the panel's own byte layout (`firmware/lib/display`) with 1-bit fonts rendered from Lato (OFL-1.1) by `firmware/tools/gen_font.py`, and sends only the changed fields with a partial window. That is small, host-testable, and keeps each wake short. LVGL stays an option for the M6 widget engine if the layouts outgrow this.
