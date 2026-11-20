@@ -340,6 +340,41 @@ static void test_wifi_mark() {
   TEST_ASSERT_TRUE(changed > 30);
 }
 
+static void test_battery_mark() {
+  const FaceState ok{7, 5, 2, 18, 11, 215};
+  const Rect mark = face_region(FaceRegion::BatteryMark);
+  FaceState low = ok, critical = ok;
+  low.battery = 1;
+  critical.battery = 2;
+  Rect out[kFaceRegions];
+  TEST_ASSERT_EQUAL_UINT32(1, face_dirty(ok, low, out));
+  TEST_ASSERT_EQUAL_INT(mark.x, out[0].x);
+  TEST_ASSERT_EQUAL_UINT32(1, face_dirty(low, critical, out));
+  check_diff_covered(ok, low);
+  check_diff_covered(low, critical);
+  check_diff_covered(critical, ok);
+  // Each level draws something different, only inside the region.
+  for (const FaceState* s : {&low, &critical}) {
+    render_face(g_fb, *s);
+    render_face(g_fb2, ok);
+    int changed = 0;
+    for (int y = 0; y < Framebuffer::kHeight; ++y) {
+      for (int x = 0; x < Framebuffer::kWidth; ++x) {
+        if (g_fb.get(x, y) != g_fb2.get(x, y)) {
+          ++changed;
+          TEST_ASSERT_TRUE(mark.contains(x, y));
+        }
+      }
+    }
+    TEST_ASSERT_TRUE(changed > 30);
+  }
+  // Clear of the Wi-Fi mark and the date line.
+  const Rect wifi = face_region(FaceRegion::WifiMark);
+  const Rect date = face_region(FaceRegion::Date);
+  TEST_ASSERT_TRUE(mark.x + mark.w <= wifi.x);
+  TEST_ASSERT_TRUE(mark.y + mark.h <= date.y);
+}
+
 static void test_setup_screen() {
   // Longest footer: "or join inkwake-WWWW" must fit the panel width.
   TEST_ASSERT_TRUE(text_width(fonts::kText30, "or join inkwake-WWWW") <= Framebuffer::kWidth - 8);
@@ -388,6 +423,7 @@ int main(int, char**) {
   RUN_TEST(test_dirty_regions_cover_pixel_diff);
   RUN_TEST(test_time_not_set);
   RUN_TEST(test_wifi_mark);
+  RUN_TEST(test_battery_mark);
   RUN_TEST(test_setup_screen);
   return UNITY_END();
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Renders the clock face on the host into a PBM image, for layout review
 // without the board. Dirty regions are outlined with --regions, --wifi shows
-// the Wi-Fi failure mark, --setup draws the Wi-Fi setup screen instead.
+// the Wi-Fi failure mark, --low /
+// --critical the battery mark, --setup draws the Wi-Fi setup screen instead.
 //
 //   gcc -c lib/qrcodegen/src/qrcodegen.c -o qrcodegen.o
 //   g++ -std=c++17 -Ilib/display/src -Ilib/qrcodegen/src tools/preview_face.cpp
@@ -20,10 +21,10 @@ using namespace inkwake;
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::fprintf(
-        stderr,
-        "usage: %s out.pbm [h m weekday day month temp_dc] [--regions] [--wifi] [--setup]\n",
-        argv[0]);
+    std::fprintf(stderr,
+                 "usage: %s out.pbm [h m weekday day month temp_dc] [--regions] [--wifi] "
+                 "[--low|--critical] [--setup]\n",
+                 argv[0]);
     return 2;
   }
   FaceState s{7, 5, 2, 18, 11, 215};
@@ -40,6 +41,8 @@ int main(int argc, char** argv) {
     regions = regions || std::strcmp(argv[i], "--regions") == 0;
     setup = setup || std::strcmp(argv[i], "--setup") == 0;
     if (std::strcmp(argv[i], "--wifi") == 0) s.wifi_failed = true;
+    if (std::strcmp(argv[i], "--low") == 0) s.battery = 1;
+    if (std::strcmp(argv[i], "--critical") == 0) s.battery = 2;
   }
 
   static Framebuffer fb;
