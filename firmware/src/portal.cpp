@@ -250,10 +250,25 @@ httpd_handle_t start_server() {
   return server;
 }
 
+// A scan started by start_scan() and not collected yet. Main task only. Without
+// it, "no results" (WIFI_SCAN_FAILED, before a requested scan starts) read as
+// a finished scan with no networks, and the page stopped waiting.
+bool g_scan_active = false;
+
+void start_scan() {
+  g_scan_active = WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING;
+  if (!g_scan_active) {
+    std::lock_guard<std::mutex> lock(g.mu);
+    g.scanning = false;  // could not start: the page shows what it has
+  }
+}
+
 // Copies finished scan results (strongest first, one entry per name) for the page.
 void collect_scan() {
+  if (!g_scan_active) return;
   const int n = WiFi.scanComplete();
   if (n == WIFI_SCAN_RUNNING) return;
+  g_scan_active = false;
   std::lock_guard<std::mutex> lock(g.mu);
   g.net_count = 0;
   for (int i = 0; i < n && g.net_count < kMaxNets; ++i) {
@@ -304,7 +319,7 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
   WiFi.softAP(g.ap);  // no password: open network (ADR-0016)
   DNSServer dns;
   dns.start(53, "*", kApIp);
-  WiFi.scanNetworks(true);
+  start_scan();
   httpd_handle_t server = start_server();
   hooks.show(Screen::Setup, g.ap, nullptr);
   touch();
@@ -328,7 +343,7 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
       g.want_scan = g.want_tz = g.want_connect = false;
       g.offered_time = 0;
     }
-    if (want_scan && WiFi.scanComplete() != WIFI_SCAN_RUNNING) WiFi.scanNetworks(true);
+    if (want_scan && !g_scan_active) start_scan();
     if (want_tz && hooks.apply_tz(new_tz)) {
       std::lock_guard<std::mutex> lock(g.mu);
       snprintf(g.tz, sizeof g.tz, "%s", new_tz);
@@ -338,6 +353,11 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
     if (want_connect) {
       hooks.show(Screen::Connecting, g.ap, ssid);
       WiFi.scanDelete();
+      if (g_scan_active) {
+        g_scan_active = false;
+        std::lock_guard<std::mutex> lock(g.mu);
+        g.scanning = false;
+      }
       WiFi.begin(ssid, pass);
       const uint32_t t0 = millis();
       while (WiFi.status() != WL_CONNECTED && millis() - t0 < kConnectTimeoutMs) {
