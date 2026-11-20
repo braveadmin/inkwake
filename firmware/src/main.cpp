@@ -15,19 +15,28 @@
 // "Time not set" until `set` over serial (later NTP, #13) writes it. The RTC's
 // oscillator-stopped flag is what marks this, so it survives resets and sleep.
 // No timezone yet (#13): the RTC holds what is displayed.
+//
+// Room temperature (#12): the on-board SHTC3, measured on every wake (started
+// right after boot, read before the display update) and once a minute while
+// awake on USB. The calibration offset (`offset`) is kept in NVS.
 #include <Arduino.h>
+#include <Preferences.h>
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 #include <sys/time.h>
 
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
 #include "clock_face.h"
 #include "framebuffer.h"
+#include "room_temp.h"
 #include "rtc.h"
+#include "shtc3.h"
 #include "st7305.h"
 
 using namespace inkwake;
@@ -66,6 +75,9 @@ constexpr uint8_t kReinit = 0xFE;  // panel reset + init + full frame
 // Defaults after power-on:
 constexpr uint8_t kDefaultReinitMin = 60;
 constexpr bool kDefaultSoftSetup = true;
+constexpr uint32_t kTempPeriodMs = 60'000;  // while awake on USB
+constexpr char kPrefsNamespace[] = "inkwake";
+constexpr char kPrefTempOffset[] = "temp_off";  // int16, tenths of a degree C
 
 struct RtcState {
   uint32_t magic;
@@ -80,6 +92,12 @@ struct RtcState {
   bool soft_setup;       // re-send the panel setup on the other minute wakes
   uint32_t log_count;    // entries ever written; the newest is at (log_count - 1) % kLogLen
   WakeEntry log[kLogLen];
+  // Added after `log` so the log, kept across resets, stays where it was.
+  int16_t temp_raw_dc;     // last SHTC3 reading without offset, kNoTemp if it failed
+  uint16_t temp_rh_dpct;   // humidity of the same reading (sensor, not corrected)
+  int16_t temp_offset_dc;  // calibration, copy of the NVS value
+  uint8_t temp_status;     // room_temp::Status of the last reading
+  uint32_t temp_errors;    // failed readings since power-on
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -99,9 +117,49 @@ FaceState current_face() {
   s.weekday = static_cast<uint8_t>((t.tm_wday + 6) % 7);  // tm: 0 = Sunday
   s.day = static_cast<uint8_t>(t.tm_mday);
   s.month = static_cast<uint8_t>(t.tm_mon + 1);
-  s.temp_dc = kNoTemp;  // room temperature arrives with #12
+  s.temp_dc = g_rtc.temp_raw_dc == kNoTemp
+                  ? kNoTemp
+                  : shtc3::apply_offset(g_rtc.temp_raw_dc, g_rtc.temp_offset_dc);
   s.time_set = g_rtc.time_set;
   return s;
+}
+
+// Completes a measurement begun with room_temp::start(). A failed reading shows
+// --.- until the next good one.
+void finish_temp(room_temp::Status started) {
+  shtc3::Reading r{};
+  const room_temp::Status s = started == room_temp::Status::Ok ? room_temp::finish(r) : started;
+  g_rtc.temp_status = static_cast<uint8_t>(s);
+  if (s == room_temp::Status::Ok) {
+    g_rtc.temp_raw_dc = r.temp_dc;
+    g_rtc.temp_rh_dpct = r.rh_dpct;
+  } else {
+    g_rtc.temp_raw_dc = kNoTemp;
+    g_rtc.temp_errors++;
+  }
+}
+
+void measure_temp() { finish_temp(room_temp::start()); }
+
+int16_t load_temp_offset() {
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, true)) return 0;  // nothing saved yet
+  const int16_t v = prefs.getShort(kPrefTempOffset, 0);
+  prefs.end();
+  return shtc3::offset_valid(v) ? v : 0;
+}
+
+bool save_temp_offset(int16_t v) {
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, false)) return false;
+  const bool ok = prefs.putShort(kPrefTempOffset, v) == sizeof v;
+  prefs.end();
+  return ok;
+}
+
+// Tenths as "-3.5"; ASCII only for the serial terminal.
+void format_tenths(int v, char* buf, size_t n) {
+  snprintf(buf, n, "%s%d.%d", v < 0 ? "-" : "", std::abs(v) / 10, std::abs(v) % 10);
 }
 
 void set_system_clock(time_t t) {
@@ -223,9 +281,11 @@ bool int_needs_pullup() {
 
 void print_help() {
   Serial.print(
-      "\r\ninkwake clock (M2, #18)\r\n"
+      "\r\ninkwake clock (M2)\r\n"
       "  set YYYY-MM-DD HH:MM   set the clock and the RTC (no timezone yet: enter local time)\r\n"
       "  rtc                    RTC time and wake counters\r\n"
+      "  temp                   measure the room temperature now (sensor, offset, humidity)\r\n"
+      "  offset [C]             show or set the temperature calibration, -10.0 to 10.0 C\r\n"
       "  log                    last 32 wakes: time, cause, redraw, awake time, battery\r\n"
       "  full                   full redraw\r\n"
       "  init                   restart the panel (reset + init) and redraw\r\n"
@@ -292,6 +352,53 @@ void print_log() {
   }
 }
 
+void print_temp() {
+  char shown[12], sensor[12], offset[12];
+  format_tenths(g_rtc.temp_offset_dc, offset, sizeof offset);
+  const auto status = static_cast<room_temp::Status>(g_rtc.temp_status);
+  if (status == room_temp::Status::Ok) {
+    char rh[12];
+    format_tenths(current_face().temp_dc, shown, sizeof shown);
+    format_tenths(g_rtc.temp_raw_dc, sensor, sizeof sensor);
+    format_tenths(g_rtc.temp_rh_dpct, rh, sizeof rh);
+    Serial.printf("temp %s C (sensor %s C, offset %s C), humidity %s %%RH (sensor)\r\n", shown,
+                  sensor, offset, rh);
+  } else {
+    Serial.printf("temp: %s (offset %s C)\r\n", room_temp::status_name(status), offset);
+  }
+  uint16_t id = 0;
+  const room_temp::Status id_status = room_temp::read_id(id);
+  if (id_status == room_temp::Status::Ok) {
+    Serial.printf("SHTC3 id 0x%04X", id);
+  } else {
+    Serial.printf("SHTC3 id: %s", room_temp::status_name(id_status));
+  }
+  Serial.printf(", failed readings since power-on: %lu\r\n",
+                static_cast<unsigned long>(g_rtc.temp_errors));
+}
+
+// "offset" alone prints it; "offset -3.5" sets and saves it.
+void handle_offset(const String& arg) {
+  if (!arg.isEmpty()) {
+    char* end = nullptr;
+    const float c = strtof(arg.c_str(), &end);
+    // Range check before rounding: lroundf of a huge value is undefined (NaN fails it too).
+    const bool in_range = c >= -10.0f && c <= 10.0f;
+    const long dc = in_range ? lroundf(c * 10) : 0;
+    if (end == arg.c_str() || *end != '\0' || !in_range || !shtc3::offset_valid(dc)) {
+      Serial.print("offset takes -10.0 to 10.0 (degrees C), e.g. `offset -3.5`\r\n");
+      return;
+    }
+    g_rtc.temp_offset_dc = static_cast<int16_t>(dc);
+    if (!save_temp_offset(g_rtc.temp_offset_dc)) {
+      Serial.print("could not save the offset: it is lost at power-off\r\n");
+    }
+  }
+  char buf[12];
+  format_tenths(g_rtc.temp_offset_dc, buf, sizeof buf);
+  Serial.printf("temperature offset %s C\r\n", buf);
+}
+
 void handle_line(const String& line) {
   int y, mo, d, h, mi;
   if (line.startsWith("set ") &&
@@ -303,6 +410,13 @@ void handle_line(const String& line) {
     print_rtc();
   } else if (line == "log") {
     print_log();
+  } else if (line == "temp") {
+    measure_temp();
+    print_temp();
+  } else if (line == "offset" || line.startsWith("offset ")) {
+    String arg = line.substring(6);
+    arg.trim();
+    handle_offset(arg);
   } else if (line.startsWith("reinit ")) {
     const long n = line.substring(7).toInt();
     if (n >= 0 && n <= 60) {
@@ -351,6 +465,8 @@ void setup() {
   pinMode(kKeyPin, INPUT);
 
   rtc::begin();
+  // Runs while the RTC sync and panel setup happen; read before the redraw.
+  const room_temp::Status temp_started = room_temp::start();
 
   const uint64_t ext1 = cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
   const bool key = ext1 & (1ULL << kKeyPin);
@@ -363,6 +479,7 @@ void setup() {
     if (cause == ESP_SLEEP_WAKEUP_TIMER) g_rtc.timer_wakes++;
     rtc_status = sync_from_rtc();
     if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
+    finish_temp(temp_started);
     const bool reinit =
         !key && g_rtc.reinit_min != 0 && current_face().minute % g_rtc.reinit_min == 0;
     g_lcd.begin(reinit);
@@ -391,6 +508,8 @@ void setup() {
     g_rtc.reinit_min = kDefaultReinitMin;
     g_rtc.soft_setup = kDefaultSoftSetup;
     memcpy(g_rtc.log, saved_log, sizeof saved_log);
+    g_rtc.temp_offset_dc = load_temp_offset();
+    finish_temp(temp_started);
     rtc_status = sync_from_rtc();
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
@@ -437,6 +556,11 @@ void loop() {
       line += static_cast<char>(c);
       Serial.write(static_cast<uint8_t>(c));
     }
+  }
+  static uint32_t last_temp_ms = millis();
+  if (millis() - last_temp_ms >= kTempPeriodMs) {
+    last_temp_ms = millis();
+    measure_temp();
   }
   if (current_face() != g_rtc.shown) update_display(false);
   if (!HWCDC::isPlugged()) {
