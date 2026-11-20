@@ -31,7 +31,7 @@ void St7305::begin(bool cold) {
   spi_.begin(kSck, -1, kMosi, -1);
   if (cold) {
     reset();
-    init_regs();  // ends in high power mode
+    init_regs(true);  // ends in high power mode
     lpm_ = false;
     display_on_ = false;
   } else {
@@ -57,7 +57,8 @@ void St7305::hold_pins(bool hold) {
 }
 
 void St7305::refresh(const Framebuffer& fb, const Rect* rects, size_t n) {
-  if (n == 0) return;
+  // Runs with n == 0 too: after reapply_setup() it still turns the display on
+  // and parks the panel in LPM.
   power_mode(false);
   for (size_t i = 0; i < n; ++i) {
     if (rects[i].clipped(Framebuffer::kWidth, Framebuffer::kHeight).empty()) continue;
@@ -134,7 +135,15 @@ void St7305::reset() {
   delay(50);
 }
 
-void St7305::init_regs() {
+void St7305::reapply_setup() {
+  init_regs(false);
+  lpm_ = false;
+  display_on_ = false;
+}
+
+// wait = false skips the 200 ms after sleep out: fine when the controller is
+// already awake; if it was asleep, the next call catches what it missed.
+void St7305::init_regs(bool wait) {
   struct Reg {
     uint8_t cmd;
     uint8_t len;
@@ -163,7 +172,7 @@ void St7305::init_regs() {
   };
   for (const auto& r : kPre) cmd_data(r.cmd, r.data, r.len);
   cmd(0x11);  // sleep out
-  delay(200);
+  if (wait) delay(200);
   for (const auto& r : kPost) cmd_data(r.cmd, r.data, r.len);
   cmd(0x21);  // inversion on
   const PanelWindow full = PanelWindow::full();

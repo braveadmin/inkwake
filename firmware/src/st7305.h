@@ -27,6 +27,12 @@ class St7305 {
   // Writes the given regions (or the whole frame) in high power mode, then
   // parks the panel in low power mode (0x39), which keeps the image.
   void refresh(const Framebuffer& fb, const Rect* rects, size_t n);
+
+  // Re-sends the whole register setup (sleep out, display on included) without
+  // the reset pulse or the post-sleep-out wait. Restores a controller that lost
+  // its settings or got a stray command, without the visible redraw of a reset.
+  // Ends in high power mode; the next refresh parks it in LPM.
+  void reapply_setup();
   void refresh_full(const Framebuffer& fb);
 
   // Latch DC/CS/RST so the panel keeps its state through deep sleep.
@@ -38,7 +44,7 @@ class St7305 {
   void write_window(const Framebuffer& fb, const PanelWindow& w);
   void power_mode(bool low);
   void reset();
-  void init_regs();
+  void init_regs(bool wait);
 
   SPIClass spi_{HSPI};
   void display_on();
