@@ -25,7 +25,6 @@ Each feature is worked in its own session, tracked as a GitHub issue (braveadmin
 - The user flashes from the browser with https://adafruit.github.io/Adafruit_WebSerial_ESPTool/: erase, then 0x0 bootloader.bin, 0x8000 partitions.bin, 0x10000 firmware.bin. esptool-js (espressif.github.io) fails here with "CryptoJS is not defined" (CDN blocked).
 - Erase Flash wipes NVS (saved settings, Wi-Fi credentials). For normal updates tell the user to flash only firmware.bin at 0x10000 without erasing; full erase + three files for a first install or recovery, and after OTA has been used (otadata may point to the second app slot). Tell the user when a new image (e.g. littlefs.bin in M5) or a partition change adds or moves an address.
 - Serial console: https://googlechromelabs.github.io/serial-terminal/ at 115200. Firmware output must end lines with `\r\n` (that terminal does not add CR).
-- Local builds do not work on the user's work machine: the corporate TLS proxy breaks PlatformIO package downloads even with the CA bundle (/etc/ssl/certs/kapsch-bundle.pem) added to certifi. Rely on CI. clang-format can be installed with pip for local lint.
 - Sources outside `src/` (e.g. `spike/`) need framework libraries listed in `lib_deps` (SPI, Preferences), or the library finder misses them.
 
 ## Hardware facts (verified unless noted)
