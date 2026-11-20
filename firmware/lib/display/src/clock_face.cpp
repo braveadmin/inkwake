@@ -23,6 +23,13 @@ constexpr int kMarkW = 23;
 constexpr int kMarkH = 12;
 constexpr int kMarkX = Framebuffer::kWidth - kMarkW - 6;
 constexpr int kMarkY = 4;
+// Low-battery mark, top left: a 20x11 battery outline with a 2x5 tip, then a
+// 3 px "!" when critical. Low shows one bar inside.
+constexpr int kBatX = 6;
+constexpr int kBatY = 4;
+constexpr int kBatBodyW = 20;
+constexpr int kBatH = 11;
+constexpr int kBatW = kBatBodyW + 2 + 3 + 3;  // body, tip, gap, "!"
 
 const char* const kWeekdays[] = {"Monday", "Tuesday",  "Wednesday", "Thursday",
                                  "Friday", "Saturday", "Sunday"};
@@ -113,6 +120,21 @@ void draw_wifi_mark(Framebuffer& fb) {
   fb.fill(Rect{bx, kMarkY + kMarkH - 2, 3, 2}, true);
 }
 
+void draw_battery_mark(Framebuffer& fb, uint8_t level) {
+  fb.fill(Rect{kBatX, kBatY, kBatBodyW, 1}, true);
+  fb.fill(Rect{kBatX, kBatY + kBatH - 1, kBatBodyW, 1}, true);
+  fb.fill(Rect{kBatX, kBatY, 1, kBatH}, true);
+  fb.fill(Rect{kBatX + kBatBodyW - 1, kBatY, 1, kBatH}, true);
+  fb.fill(Rect{kBatX + kBatBodyW, kBatY + 3, 2, kBatH - 6}, true);  // tip
+  if (level == 1) {
+    fb.fill(Rect{kBatX + 2, kBatY + 2, 4, kBatH - 4}, true);  // one bar left
+  } else {
+    const int bx = kBatX + kBatW - 3;
+    fb.fill(Rect{bx, kBatY, 3, kBatH - 3}, true);
+    fb.fill(Rect{bx, kBatY + kBatH - 2, 3, 2}, true);
+  }
+}
+
 bool same_date(const FaceState& a, const FaceState& b) {
   if (!a.time_set || !b.time_set) return a.time_set == b.time_set;
   return a.weekday == b.weekday && a.day == b.day && a.month == b.month;
@@ -128,6 +150,8 @@ Rect face_region(FaceRegion region) {
       return text_band(fonts::kText30, kTempBaseline);
     case FaceRegion::WifiMark:
       return Rect{kMarkX - kMargin, kMarkY - kMargin, kMarkW + 2 * kMargin, kMarkH + 2 * kMargin};
+    case FaceRegion::BatteryMark:
+      return Rect{kBatX - kMargin, kBatY - kMargin, kBatW + 2 * kMargin, kBatH + 2 * kMargin};
     case FaceRegion::Count:
       return {};
     default: {
@@ -162,6 +186,7 @@ void render_face(Framebuffer& fb, const FaceState& s) {
   draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTempBaseline, buf);
 
   if (s.wifi_failed) draw_wifi_mark(fb);
+  if (s.battery != 0) draw_battery_mark(fb, s.battery);
 }
 
 size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out) {
@@ -173,6 +198,7 @@ size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out) {
   if (!same_date(before, after)) out[n++] = face_region(FaceRegion::Date);
   if (before.temp_dc != after.temp_dc) out[n++] = face_region(FaceRegion::Temp);
   if (before.wifi_failed != after.wifi_failed) out[n++] = face_region(FaceRegion::WifiMark);
+  if (before.battery != after.battery) out[n++] = face_region(FaceRegion::BatteryMark);
   return n;
 }
 

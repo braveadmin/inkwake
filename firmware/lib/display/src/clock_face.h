@@ -21,10 +21,12 @@ struct FaceState {
   int16_t temp_dc = kNoTemp;  // room temperature in tenths of a degree C
   bool time_set = true;       // false: the clock lost its time; shows --:-- and "Time not set"
   bool wifi_failed = false;   // last Wi-Fi sync failed: small Wi-Fi "!" mark top right (#20)
+  uint8_t battery = 0;        // 0 ok, 1 low, 2 critical (battery::Level): icon top left (#36)
 
   bool operator==(const FaceState& o) const {
     return time_set == o.time_set && hour == o.hour && minute == o.minute && weekday == o.weekday &&
-           day == o.day && month == o.month && temp_dc == o.temp_dc && wifi_failed == o.wifi_failed;
+           day == o.day && month == o.month && temp_dc == o.temp_dc &&
+           wifi_failed == o.wifi_failed && battery == o.battery;
   }
   bool operator!=(const FaceState& o) const { return !(*this == o); }
 };
@@ -37,6 +39,7 @@ enum class FaceRegion : uint8_t {
   Date,
   Temp,
   WifiMark,
+  BatteryMark,
   Count
 };
 constexpr size_t kFaceRegions = static_cast<size_t>(FaceRegion::Count);

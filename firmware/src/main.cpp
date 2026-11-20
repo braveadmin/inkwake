@@ -50,6 +50,7 @@
 #include <cstring>
 #include <ctime>
 
+#include "battery.h"
 #include "clock_face.h"
 #include "framebuffer.h"
 #include "ntp.h"
@@ -68,10 +69,10 @@ using namespace inkwake;
 
 namespace {
 
-constexpr int kKeyPin = 18;  // active low, external pull-up; wakes from deep sleep
-constexpr int kAmpPin = 46;  // speaker amp enable, held low in sleep
-constexpr int kBatPin = 4;   // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E001D;
+constexpr int kKeyPin = 18;                   // active low, external pull-up; wakes from deep sleep
+constexpr int kAmpPin = 46;                   // speaker amp enable, held low in sleep
+constexpr int kBatPin = 4;                    // battery sense, 1:3 divider
+constexpr uint32_t kMagic = 0x1A7E001E;       // changed with the RtcState layout
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -157,6 +158,9 @@ struct RtcState {
   uint16_t ntp_wifi_ms;   // last try, until Wi-Fi connected
   uint32_t ntp_ok;        // good syncs since power-on
   uint32_t ntp_failed;    // failed tries since power-on
+  // Battery (#36), read on every wake.
+  uint16_t bat_mv;    // last averaged reading
+  uint8_t bat_level;  // battery::Level, with hysteresis
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -183,6 +187,7 @@ FaceState current_face() {
   const auto ntp = static_cast<ntp_sync::Status>(g_rtc.ntp_status);
   s.wifi_failed = g_rtc.wifi_configured && g_rtc.ntp_status != 0 && ntp != ntp_sync::Status::Ok &&
                   ntp != ntp_sync::Status::NoWifiConfig;
+  s.battery = g_rtc.bat_level;
   return s;
 }
 
@@ -385,9 +390,15 @@ char run_ntp_sync() {
   return r.status == ntp_sync::Status::Ok && !ok ? 'X' : ntp_sync::status_letter(r.status);
 }
 
+bool battery_critical() {
+  return static_cast<battery::Level>(g_rtc.bat_level) == battery::Level::Critical;
+}
+
 // Syncs if Wi-Fi is set up and the schedule says so. 0 if nothing ran.
+// Skipped on a critical battery: the Wi-Fi current peak could brown the board
+// out, and a flat cell loses the RTC time anyway.
 char maybe_ntp_sync() {
-  if (!g_rtc.wifi_configured) return 0;
+  if (!g_rtc.wifi_configured || battery_critical()) return 0;
   if (!ntp::due(g_rtc.ntp_schedule, time(nullptr), g_rtc.time_set, ntp_interval_s())) return 0;
   return run_ntp_sync();
 }
@@ -412,6 +423,16 @@ uint8_t update_display(bool full) {
 
 uint16_t battery_mv() { return static_cast<uint16_t>(analogReadMilliVolts(kBatPin) * 3); }
 
+// Averaged reading into g_rtc and the level updated. Call before the redraw.
+void measure_battery() {
+  constexpr size_t kSamples = 4;
+  uint16_t mv[kSamples];
+  for (uint16_t& v : mv) v = battery_mv();
+  g_rtc.bat_mv = battery::average_mv(mv, kSamples);
+  g_rtc.bat_level = static_cast<uint8_t>(
+      battery::classify(static_cast<battery::Level>(g_rtc.bat_level), g_rtc.bat_mv));
+}
+
 void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_letter) {
   WakeEntry& e = g_rtc.log[g_rtc.log_count++ % kLogLen];
   e.when = static_cast<uint32_t>(time(nullptr));
@@ -420,7 +441,7 @@ void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_lett
   e.regions = regions;
   e.ntp_result = ntp_letter;
   e.awake_ms = static_cast<uint16_t>(millis());
-  e.bat_mv = battery_mv();
+  e.bat_mv = g_rtc.bat_mv;
 }
 
 // INT is open drain. Checks for an external pull-up by pulling the pin down
@@ -573,6 +594,7 @@ void print_help() {
       "  sync                   sync with NTP now\r\n"
       "  temp                   measure the room temperature now (sensor, offset, humidity)\r\n"
       "  offset [C]             show or set the temperature calibration, -10.0 to 10.0 C\r\n"
+      "  bat                    battery voltage and level (low < 3.5 V, critical < 3.3 V)\r\n"
       "  log                    last 32 wakes: time, cause, redraw, awake time, battery\r\n"
       "  full                   full redraw\r\n"
       "  init                   restart the panel (reset + init) and redraw\r\n"
@@ -891,6 +913,14 @@ void handle_line(const String& line) {
   } else if (line == "setup") {
     run_setup(true);
     print_ntp();
+  } else if (line == "bat") {
+    measure_battery();
+    Serial.printf(
+        "battery %u mV, %s (low below %u mV, critical below %u mV, clears %u mV above)%s\r\n",
+        g_rtc.bat_mv, battery::level_name(static_cast<battery::Level>(g_rtc.bat_level)),
+        battery::kLowMv, battery::kCriticalMv, battery::kHysteresisMv,
+        HWCDC::isPlugged() ? "; on USB this reads the charger, not the cell" : "");
+    if (current_face() != g_rtc.shown) update_display(false);
   } else if (line == "log") {
     print_log();
   } else if (line == "temp") {
@@ -964,6 +994,7 @@ void setup() {
     rtc_status = sync_from_rtc();
     if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
     finish_temp(temp_started);
+    measure_battery();
     const bool reinit =
         !key && g_rtc.reinit_min != 0 && current_face().minute % g_rtc.reinit_min == 0;
     g_lcd.begin(reinit);
@@ -1003,6 +1034,7 @@ void setup() {
     load_tz();
     load_ntp_config();
     finish_temp(temp_started);
+    measure_battery();
     rtc_status = sync_from_rtc();
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
@@ -1081,6 +1113,7 @@ void loop() {
   if (millis() - last_temp_ms >= kTempPeriodMs) {
     last_temp_ms = millis();
     measure_temp();
+    measure_battery();
   }
   if (maybe_ntp_sync() != 0) {
     print_ntp();
