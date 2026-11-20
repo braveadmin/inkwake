@@ -14,7 +14,11 @@
 // PWR off or a flat battery loses the time: the face then shows --:-- and
 // "Time not set" until `set` over serial (later NTP, #13) writes it. The RTC's
 // oscillator-stopped flag is what marks this, so it survives resets and sleep.
-// No timezone yet (#13): the RTC holds what is displayed.
+//
+// Timezone (#13): the RTC and the system clock keep UTC. lib/tz turns it into
+// local time for the face and turns the local time typed into `set` back into
+// UTC. The POSIX TZ string (`tz`) is kept in NVS and copied into RTC memory,
+// where each wake parses it again (microseconds, no NVS read).
 //
 // Room temperature (#12): the on-board SHTC3, measured on every wake (started
 // right after boot, read before the display update) and once a minute while
@@ -38,6 +42,7 @@
 #include "rtc.h"
 #include "shtc3.h"
 #include "st7305.h"
+#include "tz.h"
 
 using namespace inkwake;
 
@@ -77,7 +82,10 @@ constexpr uint8_t kDefaultReinitMin = 60;
 constexpr bool kDefaultSoftSetup = true;
 constexpr uint32_t kTempPeriodMs = 60'000;  // while awake on USB
 constexpr char kPrefsNamespace[] = "inkwake";
-constexpr char kPrefTempOffset[] = "temp_off";  // int16, tenths of a degree C
+constexpr char kPrefTempOffset[] = "temp_off";               // int16, tenths of a degree C
+constexpr char kPrefTz[] = "tz";                             // POSIX TZ string
+constexpr size_t kTzLen = 64;                                // including the terminating NUL
+constexpr char kDefaultTz[] = "CET-1CEST,M3.5.0,M10.5.0/3";  // Central Europe
 
 struct RtcState {
   uint32_t magic;
@@ -98,6 +106,7 @@ struct RtcState {
   int16_t temp_offset_dc;  // calibration, copy of the NVS value
   uint8_t temp_status;     // room_temp::Status of the last reading
   uint32_t temp_errors;    // failed readings since power-on
+  char tz[kTzLen];         // POSIX TZ string, copy of the NVS value
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -106,17 +115,16 @@ RTC_DATA_ATTR RtcState g_rtc = {};
 
 Framebuffer g_fb;
 St7305 g_lcd;
+tz::Zone g_zone;  // parsed from g_rtc.tz on every boot and wake
 
 FaceState current_face() {
-  const time_t now = time(nullptr);
-  tm t;
-  localtime_r(&now, &t);
+  const tz::Civil t = tz::to_civil(g_zone, time(nullptr));
   FaceState s;
-  s.hour = static_cast<uint8_t>(t.tm_hour);
-  s.minute = static_cast<uint8_t>(t.tm_min);
-  s.weekday = static_cast<uint8_t>((t.tm_wday + 6) % 7);  // tm: 0 = Sunday
-  s.day = static_cast<uint8_t>(t.tm_mday);
-  s.month = static_cast<uint8_t>(t.tm_mon + 1);
+  s.hour = t.hour;
+  s.minute = t.minute;
+  s.weekday = t.weekday;  // 0 = Monday, as FaceState
+  s.day = t.day;
+  s.month = t.month;
   s.temp_dc = g_rtc.temp_raw_dc == kNoTemp
                   ? kNoTemp
                   : shtc3::apply_offset(g_rtc.temp_raw_dc, g_rtc.temp_offset_dc);
@@ -157,6 +165,36 @@ bool save_temp_offset(int16_t v) {
   return ok;
 }
 
+// Copies a valid TZ string into RTC memory and the parsed zone. False leaves both.
+bool use_tz(const char* posix) {
+  tz::Zone z;
+  // strnlen: the RTC copy may hold anything after a firmware change.
+  const size_t n = strnlen(posix, kTzLen);
+  if (n >= kTzLen || !tz::parse(posix, z)) return false;
+  if (posix != g_rtc.tz) memcpy(g_rtc.tz, posix, n + 1);
+  g_zone = z;
+  return true;
+}
+
+// NVS value, or the default when nothing valid is saved.
+void load_tz() {
+  char buf[kTzLen] = {};
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, true)) {
+    if (prefs.isKey(kPrefTz)) prefs.getString(kPrefTz, buf, sizeof buf);
+    prefs.end();
+  }
+  if (!use_tz(buf)) use_tz(kDefaultTz);
+}
+
+bool save_tz(const char* posix) {
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, false)) return false;
+  const bool ok = prefs.putString(kPrefTz, posix) == strlen(posix);
+  prefs.end();
+  return ok;
+}
+
 // Tenths as "-3.5"; ASCII only for the serial terminal.
 void format_tenths(int v, char* buf, size_t n) {
   snprintf(buf, n, "%s%d.%d", v < 0 ? "-" : "", std::abs(v) / 10, std::abs(v) % 10);
@@ -186,7 +224,7 @@ time_t make_time(int year, int mon, int day, int hour, int min, int sec) {
   t.tm_hour = hour;
   t.tm_min = min;
   t.tm_sec = sec;
-  return mktime(&t);  // TZ unset: local time = UTC
+  return mktime(&t);  // TZ unset in newlib: fields taken as they are, no zone applied
 }
 
 // Sets both the system clock and the RTC.
@@ -282,7 +320,8 @@ bool int_needs_pullup() {
 void print_help() {
   Serial.print(
       "\r\ninkwake clock (M2)\r\n"
-      "  set YYYY-MM-DD HH:MM   set the clock and the RTC (no timezone yet: enter local time)\r\n"
+      "  set YYYY-MM-DD HH:MM   set the clock, in local time (the RTC keeps UTC)\r\n"
+      "  tz [POSIX-TZ]          show or set the timezone, e.g. tz CET-1CEST,M3.5.0,M10.5.0/3\r\n"
       "  rtc                    RTC time and wake counters\r\n"
       "  temp                   measure the room temperature now (sensor, offset, humidity)\r\n"
       "  offset [C]             show or set the temperature calibration, -10.0 to 10.0 C\r\n"
@@ -297,11 +336,18 @@ void print_help() {
       "Unplug USB to run on battery with deep sleep between minutes.\r\n");
 }
 
-void print_stamp(const char* label, time_t when) {
+void print_utc(const char* label, time_t when) {
   tm t;
   gmtime_r(&when, &t);
-  Serial.printf("%s %04d-%02d-%02d %02d:%02d:%02d", label, t.tm_year + 1900, t.tm_mon + 1,
+  Serial.printf("%s %04d-%02d-%02d %02d:%02d:%02d UTC", label, t.tm_year + 1900, t.tm_mon + 1,
                 t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+}
+
+// Local time with the zone abbreviation, e.g. "2026-11-20 13:34:56 CET".
+void print_stamp(const char* label, time_t when) {
+  const tz::Civil t = tz::to_civil(g_zone, when);
+  Serial.printf("%s %04d-%02d-%02d %02d:%02d:%02d %s", label, t.year, t.month, t.day, t.hour,
+                t.minute, t.second, t.dst ? g_zone.dst_name : g_zone.std_name);
 }
 
 void print_time() {
@@ -313,7 +359,7 @@ void print_rtc() {
   time_t t = 0;
   const rtc::Status s = rtc::read(t);
   if (s == rtc::Status::Ok) {
-    print_stamp("rtc ", t);
+    print_utc("rtc ", t);
     Serial.print("\r\n");
   } else {
     Serial.printf("rtc  %s\r\n", rtc::status_name(s));
@@ -399,15 +445,59 @@ void handle_offset(const String& arg) {
   Serial.printf("temperature offset %s C\r\n", buf);
 }
 
+void print_offset(int32_t s) {
+  const int32_t a = s < 0 ? -s : s;
+  Serial.printf("UTC%c%02ld:%02ld", s < 0 ? '-' : '+', static_cast<long>(a / 3600),
+                static_cast<long>(a / 60 % 60));
+}
+
+// "tz" alone prints the zone; "tz <POSIX string>" sets and saves it.
+void handle_tz(const String& arg) {
+  if (!arg.isEmpty()) {
+    if (!use_tz(arg.c_str())) {
+      Serial.print(
+          "not a POSIX TZ string; examples:\r\n"
+          "  tz CET-1CEST,M3.5.0,M10.5.0/3     Central Europe\r\n"
+          "  tz WET0WEST,M3.5.0/1,M10.5.0      Portugal, Canary Islands\r\n"
+          "  tz GMT0BST,M3.5.0/1,M10.5.0       UK\r\n"
+          "  tz EST5EDT,M3.2.0,M11.1.0         US Eastern\r\n"
+          "  tz UTC0                           no timezone\r\n");
+      return;
+    }
+    if (!save_tz(g_rtc.tz))
+      Serial.print("could not save the timezone: it is lost at power-off\r\n");
+    update_display(true);
+  }
+  const time_t now = time(nullptr);
+  Serial.printf("tz %s\r\nnow %s, ", g_rtc.tz,
+                tz::is_dst(g_zone, now) ? g_zone.dst_name : g_zone.std_name);
+  print_offset(tz::utc_offset(g_zone, now));
+  Serial.print("\r\n");
+  int64_t start, end;
+  if (tz::transitions(g_zone, tz::to_civil(g_zone, now).year, start, end)) {
+    print_stamp("DST starts", static_cast<time_t>(start));
+    Serial.print(",");
+    print_stamp(" ends", static_cast<time_t>(end));
+    Serial.print("\r\n");
+  }
+  print_time();
+}
+
 void handle_line(const String& line) {
   int y, mo, d, h, mi;
   if (line.startsWith("set ") &&
       sscanf(line.c_str() + 4, "%d-%d-%d %d:%d", &y, &mo, &d, &h, &mi) == 5) {
-    set_clock(make_time(y, mo, d, h, mi, 0));
+    // Local wall clock -> UTC. In the hour skipped in spring the time moves an
+    // hour on (02:30 -> 03:30); in the repeated autumn hour the first one wins.
+    set_clock(static_cast<time_t>(tz::to_utc(g_zone, make_time(y, mo, d, h, mi, 0))));
     print_rtc();
     update_display(true);
   } else if (line == "rtc") {
     print_rtc();
+  } else if (line == "tz" || line.startsWith("tz ")) {
+    String arg = line.substring(2);
+    arg.trim();
+    handle_tz(arg);
   } else if (line == "log") {
     print_log();
   } else if (line == "temp") {
@@ -474,6 +564,7 @@ void setup() {
       (cause == ESP_SLEEP_WAKEUP_TIMER || cause == ESP_SLEEP_WAKEUP_EXT1) && g_rtc.magic == kMagic;
   rtc::Status rtc_status = rtc::Status::Ok;
   if (woke) {
+    if (!use_tz(g_rtc.tz)) load_tz();  // RTC copy from older firmware: read NVS
     g_rtc.wakes++;
     if (ext1 & (1ULL << rtc::kIntPin)) g_rtc.rtc_wakes++;
     if (cause == ESP_SLEEP_WAKEUP_TIMER) g_rtc.timer_wakes++;
@@ -509,6 +600,7 @@ void setup() {
     g_rtc.soft_setup = kDefaultSoftSetup;
     memcpy(g_rtc.log, saved_log, sizeof saved_log);
     g_rtc.temp_offset_dc = load_temp_offset();
+    load_tz();
     finish_temp(temp_started);
     rtc_status = sync_from_rtc();
     // A reset keeps the system clock; a power-on starts it at 1970.
