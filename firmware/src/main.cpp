@@ -37,7 +37,7 @@ namespace {
 constexpr int kKeyPin = 18;  // active low, external pull-up; wakes from deep sleep
 constexpr int kAmpPin = 46;  // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;   // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E001A;
+constexpr uint32_t kMagic = 0x1A7E001C;
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -50,13 +50,19 @@ struct WakeEntry {
   uint32_t when;    // system time after the RTC sync (Unix, UTC)
   char cause;       // R = RTC interrupt, T = fallback timer, K = KEY, P = power-on
   uint8_t rtc;      // rtc::Status of the sync
-  uint8_t regions;  // regions redrawn, kFullRefresh for a full refresh
+  uint8_t regions;  // regions redrawn, kFullRefresh / kReinit
   uint8_t pad;
   uint16_t awake_ms;  // from boot to the display update done
   uint16_t bat_mv;
 };
 constexpr size_t kLogLen = 32;
 constexpr uint8_t kFullRefresh = 0xFF;
+constexpr uint8_t kReinit = 0xFE;  // panel reset + init + full frame
+// The panel now and then loses its setup during a wake (2026-11-19/20: frozen
+// image until `init`; suspected: its RST/CS lines float while the ESP32 boots
+// from deep sleep). Restarting it on minute wakes bounds how long a freeze
+// lasts. Default for `reinit N` after power-on.
+constexpr uint8_t kDefaultReinitMin = 1;
 
 struct RtcState {
   uint32_t magic;
@@ -67,6 +73,7 @@ struct RtcState {
   uint32_t rtc_errors;   // wakes where the RTC could not be read
   bool int_pullup;       // GPIO15 has no external pull-up: use the internal one in sleep
   bool time_set;         // false while the RTC reports its time lost
+  uint8_t reinit_min;    // restart the panel when minute % reinit_min == 0; 0 = never
   uint32_t log_count;    // entries ever written; the newest is at (log_count - 1) % kLogLen
   WakeEntry log[kLogLen];
 };
@@ -218,6 +225,7 @@ void print_help() {
       "  log                    last 32 wakes: time, cause, redraw, awake time, battery\r\n"
       "  full                   full redraw\r\n"
       "  init                   restart the panel (reset + init) and redraw\r\n"
+      "  reinit N               restart the panel every N minutes on minute wakes (0 = never)\r\n"
       "  sleep                  deep sleep now, also on USB power (KEY wakes and stays awake)\r\n"
       "  box                    partial-refresh check: black square in the top-left corner\r\n"
       "  help\r\n"
@@ -266,6 +274,8 @@ void print_log() {
     char redraw[12];
     if (e.regions == kFullRefresh) {
       snprintf(redraw, sizeof redraw, "full");
+    } else if (e.regions == kReinit) {
+      snprintf(redraw, sizeof redraw, "reinit");
     } else {
       snprintf(redraw, sizeof redraw, "%u regions", e.regions);
     }
@@ -288,6 +298,14 @@ void handle_line(const String& line) {
     print_rtc();
   } else if (line == "log") {
     print_log();
+  } else if (line.startsWith("reinit ")) {
+    const long n = line.substring(7).toInt();
+    if (n >= 0 && n <= 60) {
+      g_rtc.reinit_min = static_cast<uint8_t>(n);
+      Serial.printf("panel restart every %ld min%s\r\n", n, n == 0 ? " (off)" : "");
+    } else {
+      Serial.print("reinit takes 0-60\r\n");
+    }
   } else if (line == "init") {
     g_lcd.begin(true);
     update_display(true);
@@ -337,8 +355,10 @@ void setup() {
     if (cause == ESP_SLEEP_WAKEUP_TIMER) g_rtc.timer_wakes++;
     rtc_status = sync_from_rtc();
     if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
-    g_lcd.begin(false);
-    const uint8_t regions = update_display(false);
+    const bool reinit =
+        !key && g_rtc.reinit_min != 0 && current_face().minute % g_rtc.reinit_min == 0;
+    g_lcd.begin(reinit);
+    const uint8_t regions = reinit ? (update_display(true), kReinit) : update_display(false);
     log_wake(key                               ? 'K'
              : cause == ESP_SLEEP_WAKEUP_TIMER ? 'T'
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
@@ -359,6 +379,7 @@ void setup() {
     g_rtc.magic = kMagic;
     g_rtc.int_pullup = pullup;
     g_rtc.log_count = log_count;
+    g_rtc.reinit_min = kDefaultReinitMin;
     memcpy(g_rtc.log, saved_log, sizeof saved_log);
     rtc_status = sync_from_rtc();
     // A reset keeps the system clock; a power-on starts it at 1970.

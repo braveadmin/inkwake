@@ -18,8 +18,10 @@ class St7305 {
   // Pins: SCK 11, MOSI 12, DC 5, CS 40, RST 41 (hardware/wiring.md).
   static constexpr int kSck = 11, kMosi = 12, kDc = 5, kCs = 40, kRst = 41;
 
-  // cold = true resets and initialises the panel. After a deep-sleep wake with
-  // the pins held, pass false: the panel kept its RAM and is parked in LPM.
+  // cold = true resets and initialises the panel, leaving the display off
+  // until the first refresh has written a frame, so a restart shows no
+  // garbage. After a deep-sleep wake with the pins held, pass false: the
+  // panel kept its RAM and is parked in LPM.
   void begin(bool cold);
 
   // Writes the given regions (or the whole frame) in high power mode, then
@@ -39,7 +41,10 @@ class St7305 {
   void init_regs();
 
   SPIClass spi_{HSPI};
+  void display_on();
+
   bool lpm_ = false;
+  bool display_on_ = true;
 };
 
 }  // namespace inkwake

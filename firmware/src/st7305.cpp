@@ -33,6 +33,7 @@ void St7305::begin(bool cold) {
     reset();
     init_regs();  // ends in high power mode
     lpm_ = false;
+    display_on_ = false;
   } else {
     lpm_ = true;  // refresh() always parks the panel in LPM before sleep
   }
@@ -62,13 +63,21 @@ void St7305::refresh(const Framebuffer& fb, const Rect* rects, size_t n) {
     if (rects[i].clipped(Framebuffer::kWidth, Framebuffer::kHeight).empty()) continue;
     write_window(fb, PanelWindow::cover(rects[i], !kNarrowColumns));
   }
+  display_on();
   power_mode(true);
 }
 
 void St7305::refresh_full(const Framebuffer& fb) {
   power_mode(false);
   write_window(fb, PanelWindow::full());
+  display_on();
   power_mode(true);
+}
+
+void St7305::display_on() {
+  if (display_on_) return;
+  cmd(0x29);
+  display_on_ = true;
 }
 
 void St7305::power_mode(bool low) {
@@ -166,8 +175,7 @@ void St7305::init_regs() {
   cmd_data(0x2B, row, sizeof row);
   cmd_data(0x35, kTe, sizeof kTe);  // tearing effect on
   cmd_data(0xD0, kD0, sizeof kD0);
-  cmd(0x38);  // high power mode
-  cmd(0x29);  // display on
+  cmd(0x38);  // high power mode; display on (0x29) follows the first frame
 }
 
 }  // namespace inkwake
