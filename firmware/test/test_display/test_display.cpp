@@ -3,12 +3,15 @@
 
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 #include "clock_face.h"
 #include "font.h"
 #include "fonts/text30.h"
 #include "framebuffer.h"
 #include "panel_window.h"
+#include "qrcodegen.h"
+#include "setup_screen.h"
 
 using namespace inkwake;
 
@@ -312,6 +315,60 @@ static void test_time_not_set() {
   check_diff_covered(unset, later);
 }
 
+static void test_wifi_mark() {
+  const FaceState ok{7, 5, 2, 18, 11, 215};
+  FaceState failed = ok;
+  failed.wifi_failed = true;
+  Rect out[kFaceRegions];
+  TEST_ASSERT_EQUAL_UINT32(1, face_dirty(ok, failed, out));
+  const Rect mark = face_region(FaceRegion::WifiMark);
+  TEST_ASSERT_EQUAL_INT(mark.x, out[0].x);
+  check_diff_covered(ok, failed);
+  check_diff_covered(failed, ok);
+  // The mark draws something, and only inside its region.
+  render_face(g_fb, failed);
+  render_face(g_fb2, ok);
+  int changed = 0;
+  for (int y = 0; y < Framebuffer::kHeight; ++y) {
+    for (int x = 0; x < Framebuffer::kWidth; ++x) {
+      if (g_fb.get(x, y) != g_fb2.get(x, y)) {
+        ++changed;
+        TEST_ASSERT_TRUE(mark.contains(x, y));
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(changed > 30);
+}
+
+static void test_setup_screen() {
+  // Longest footer: "or join inkwake-WWWW" must fit the panel width.
+  TEST_ASSERT_TRUE(text_width(fonts::kText30, "or join inkwake-WWWW") <= Framebuffer::kWidth - 8);
+  TEST_ASSERT_TRUE(text_width(fonts::kText30, kSetupTitle) <= Framebuffer::kWidth - 8);
+  TEST_ASSERT_TRUE(text_width(fonts::kText30, kRetryTitle) <= Framebuffer::kWidth - 8);
+  // Version 2 and 3 codes: at least 6 px per module, inside the panel.
+  for (int modules : {25, 29}) {
+    const QrPlacement p = setup_qr_placement(modules);
+    TEST_ASSERT_TRUE(p.scale >= 6);
+    TEST_ASSERT_TRUE(p.x >= 0 && p.x + modules * p.scale <= Framebuffer::kWidth);
+    TEST_ASSERT_TRUE(p.y >= 40 && p.y + modules * p.scale <= 262);
+  }
+  // Each module lands where expected.
+  uint8_t qr[qrcodegen_BUFFER_LEN_MAX];
+  uint8_t tmp[qrcodegen_BUFFER_LEN_MAX];
+  TEST_ASSERT_TRUE(qrcodegen_encodeText("WIFI:T:nopass;S:inkwake-A10B;;", tmp, qr,
+                                        qrcodegen_Ecc_LOW, 1, 40, qrcodegen_Mask_AUTO, true));
+  render_setup(g_fb, qr, "inkwake-A10B");
+  const int n = qrcodegen_getSize(qr);
+  const QrPlacement p = setup_qr_placement(n);
+  for (int my = 0; my < n; ++my) {
+    for (int mx = 0; mx < n; ++mx) {
+      const int cx = p.x + mx * p.scale + p.scale / 2;
+      const int cy = p.y + my * p.scale + p.scale / 2;
+      TEST_ASSERT_EQUAL(qrcodegen_getModule(qr, mx, my), g_fb.get(cx, cy));
+    }
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_packing_matches_spike_formula);
@@ -330,5 +387,7 @@ int main(int, char**) {
   RUN_TEST(test_dirty_regions);
   RUN_TEST(test_dirty_regions_cover_pixel_diff);
   RUN_TEST(test_time_not_set);
+  RUN_TEST(test_wifi_mark);
+  RUN_TEST(test_setup_screen);
   return UNITY_END();
 }
