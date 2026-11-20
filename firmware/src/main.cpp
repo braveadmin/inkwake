@@ -12,7 +12,7 @@
 // drifts by seconds per minute). A timer wake 10 s after the minute is a
 // fallback in case the interrupt is missed. The RTC has no backup supply, so
 // PWR off or a flat battery loses the time: the face then shows --:-- and
-// "Time not set" until `set` over serial (later NTP, #13) writes it. The RTC's
+// "Time not set" until `set` over serial or an NTP sync writes it. The RTC's
 // oscillator-stopped flag is what marks this, so it survives resets and sleep.
 //
 // Timezone (#13): the RTC and the system clock keep UTC. lib/tz turns it into
@@ -23,6 +23,13 @@
 // Room temperature (#12): the on-board SHTC3, measured on every wake (started
 // right after boot, read before the display update) and once a minute while
 // awake on USB. The calibration offset (`offset`) is kept in NVS.
+//
+// NTP (#13): at power-on and then every `ntp every H` hours (default 24) the
+// wake that finds a sync due turns Wi-Fi on, asks the NTP server once, turns
+// Wi-Fi off, and writes the corrected UTC time to the RTC. Failed tries retry
+// with a growing delay (lib/ntp), sooner while the time is not set. Without
+// Wi-Fi the clock just keeps running from the RTC. Wi-Fi credentials come from
+// the temporary `wifi` serial command until provisioning (#20) replaces it.
 #include <Arduino.h>
 #include <Preferences.h>
 #include <driver/gpio.h>
@@ -38,6 +45,8 @@
 
 #include "clock_face.h"
 #include "framebuffer.h"
+#include "ntp.h"
+#include "ntp_sync.h"
 #include "room_temp.h"
 #include "rtc.h"
 #include "shtc3.h"
@@ -67,11 +76,11 @@ constexpr uint64_t kUnsetFallbackUs = 70'000'000;
 // One deep-sleep wake (or power-on), for diagnosing battery runs afterwards
 // over serial (`log`).
 struct WakeEntry {
-  uint32_t when;    // system time after the RTC sync (Unix, UTC)
-  char cause;       // R = RTC interrupt, T = fallback timer, K = KEY, P = power-on
-  uint8_t rtc;      // rtc::Status of the sync
-  uint8_t regions;  // regions redrawn, kFullRefresh / kReinit
-  uint8_t pad;
+  uint32_t when;      // system time after the RTC sync (Unix, UTC)
+  char cause;         // R = RTC interrupt, T = fallback timer, K = KEY, P = power-on
+  uint8_t rtc;        // rtc::Status of the sync
+  uint8_t regions;    // regions redrawn, kFullRefresh / kReinit
+  char ntp_result;    // 0 = no sync on this wake, else ntp_sync::status_letter()
   uint16_t awake_ms;  // from boot to the display update done
   uint16_t bat_mv;
 };
@@ -92,6 +101,16 @@ constexpr char kPrefTempOffset[] = "temp_off";               // int16, tenths of
 constexpr char kPrefTz[] = "tz";                             // POSIX TZ string
 constexpr size_t kTzLen = 64;                                // including the terminating NUL
 constexpr char kDefaultTz[] = "CET-1CEST,M3.5.0,M10.5.0/3";  // Central Europe
+constexpr char kPrefWifiSsid[] = "wifi_ssid";
+constexpr char kPrefWifiPass[] = "wifi_pass";
+constexpr char kPrefNtpServer[] = "ntp_server";
+constexpr char kPrefNtpHours[] = "ntp_hours";  // uint16
+constexpr char kDefaultNtpServer[] = "pool.ntp.org";
+constexpr uint16_t kDefaultNtpHours = 24;  // crystal drift ~2 s/day at most; ADR-0013
+constexpr uint16_t kMaxNtpHours = 168;
+constexpr size_t kSsidLen = 33;  // 32 + NUL
+constexpr size_t kPassLen = 64;  // WPA2 passphrase up to 63 + NUL
+constexpr size_t kHostLen = 64;
 
 struct RtcState {
   uint32_t magic;
@@ -113,6 +132,18 @@ struct RtcState {
   uint8_t temp_status;     // room_temp::Status of the last reading
   uint32_t temp_errors;    // failed readings since power-on
   char tz[kTzLen];         // POSIX TZ string, copy of the NVS value
+  // NTP (#13). Server and Wi-Fi credentials are read from NVS only to sync.
+  ntp::Schedule ntp_schedule;
+  uint16_t ntp_hours;     // sync interval, copy of the NVS value
+  bool wifi_configured;   // an SSID is saved
+  uint8_t ntp_status;     // ntp_sync::Status of the last try, 0 = none since power-on
+  uint8_t ntp_reply;      // ntp::Reply of the last bad reply
+  int32_t ntp_offset_ms;  // correction applied by the last good sync
+  uint16_t ntp_rtt_ms;
+  uint16_t ntp_total_ms;  // last try, Wi-Fi on to off
+  uint16_t ntp_wifi_ms;   // last try, until Wi-Fi connected
+  uint32_t ntp_ok;        // good syncs since power-on
+  uint32_t ntp_failed;    // failed tries since power-on
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -253,6 +284,97 @@ void set_clock_from_build() {
   set_system_clock(make_time(year, p ? static_cast<int>(p - kMonths) / 3 + 1 : 1, day, h, m, s));
 }
 
+// NVS string into buf; empty when missing.
+void load_pref_string(const char* key, char* buf, size_t n) {
+  buf[0] = '\0';
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, true)) return;
+  if (prefs.isKey(key)) prefs.getString(key, buf, n);
+  prefs.end();
+}
+
+bool save_pref_string(const char* key, const char* value) {
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, false)) return false;
+  const bool ok = prefs.putString(key, value) == strlen(value);
+  prefs.end();
+  return ok;
+}
+
+void load_ntp_config() {
+  char ssid[kSsidLen];
+  load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
+  g_rtc.wifi_configured = ssid[0] != '\0';
+  uint16_t h = kDefaultNtpHours;
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, true)) {
+    h = prefs.getUShort(kPrefNtpHours, kDefaultNtpHours);
+    prefs.end();
+  }
+  g_rtc.ntp_hours = h >= 1 && h <= kMaxNtpHours ? h : kDefaultNtpHours;
+}
+
+int64_t ntp_interval_s() {
+  const uint16_t h = g_rtc.ntp_hours != 0 ? g_rtc.ntp_hours : kDefaultNtpHours;
+  return static_cast<int64_t>(h) * 3600;
+}
+
+// Adds the NTP correction to the system clock, then writes the RTC at the
+// next whole second (a write restarts the RTC's second), so both agree to
+// about a millisecond. Returns the RTC write result.
+bool apply_ntp_offset(int64_t offset_us) {
+  timeval tv;
+  gettimeofday(&tv, nullptr);
+  const int64_t now = static_cast<int64_t>(tv.tv_sec) * 1000000 + tv.tv_usec + offset_us;
+  tv.tv_sec = static_cast<time_t>(now / 1000000);
+  tv.tv_usec = static_cast<suseconds_t>(now % 1000000);
+  settimeofday(&tv, nullptr);
+  const time_t s = time(nullptr);
+  while (time(nullptr) == s) delay(1);
+  const bool ok = rtc::write(time(nullptr));
+  // A failed write leaves the RTC flagged: the next wake reads "time lost"
+  // and the schedule tries again soon.
+  g_rtc.time_set = ok;
+  return ok;
+}
+
+// One NTP try now, recorded in the schedule and the counters. Returns the log letter.
+char run_ntp_sync() {
+  char ssid[kSsidLen], pass[kPassLen], server[kHostLen];
+  load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
+  load_pref_string(kPrefWifiPass, pass, sizeof pass);
+  load_pref_string(kPrefNtpServer, server, sizeof server);
+  if (server[0] == '\0') snprintf(server, sizeof server, "%s", kDefaultNtpServer);
+  const ntp_sync::Result r = ntp_sync::run(ssid, pass, server);
+  bool ok = r.status == ntp_sync::Status::Ok;
+  if (ok) {
+    ok = apply_ntp_offset(r.offset_us);
+    g_rtc.ntp_offset_ms = static_cast<int32_t>(r.offset_us / 1000);
+    g_rtc.ntp_rtt_ms = static_cast<uint16_t>(r.rtt_us / 1000);
+  }
+  g_rtc.ntp_status = static_cast<uint8_t>(r.status);
+  g_rtc.ntp_reply = static_cast<uint8_t>(r.reply);
+  g_rtc.ntp_total_ms = static_cast<uint16_t>(r.total_ms);
+  g_rtc.ntp_wifi_ms = static_cast<uint16_t>(r.wifi_ms);
+  if (r.status != ntp_sync::Status::NoWifiConfig) {
+    ntp::record(g_rtc.ntp_schedule, time(nullptr), ok);
+    if (ok) {
+      g_rtc.ntp_ok++;
+    } else {
+      g_rtc.ntp_failed++;
+    }
+  }
+  // X: the server answered but the RTC did not take the time.
+  return r.status == ntp_sync::Status::Ok && !ok ? 'X' : ntp_sync::status_letter(r.status);
+}
+
+// Syncs if Wi-Fi is set up and the schedule says so. 0 if nothing ran.
+char maybe_ntp_sync() {
+  if (!g_rtc.wifi_configured) return 0;
+  if (!ntp::due(g_rtc.ntp_schedule, time(nullptr), g_rtc.time_set, ntp_interval_s())) return 0;
+  return run_ntp_sync();
+}
+
 // Redraws the face. Full refresh on demand and once an hour, otherwise only
 // the fields that changed since the last write. Returns the regions written,
 // kFullRefresh for a full refresh.
@@ -273,13 +395,13 @@ uint8_t update_display(bool full) {
 
 uint16_t battery_mv() { return static_cast<uint16_t>(analogReadMilliVolts(kBatPin) * 3); }
 
-void log_wake(char cause, rtc::Status rtc_status, uint8_t regions) {
+void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_letter) {
   WakeEntry& e = g_rtc.log[g_rtc.log_count++ % kLogLen];
   e.when = static_cast<uint32_t>(time(nullptr));
   e.cause = cause;
   e.rtc = static_cast<uint8_t>(rtc_status);
   e.regions = regions;
-  e.pad = 0;
+  e.ntp_result = ntp_letter;
   e.awake_ms = static_cast<uint16_t>(millis());
   e.bat_mv = battery_mv();
 }
@@ -331,6 +453,14 @@ void print_help() {
       "  set YYYY-MM-DD HH:MM   set the clock, in local time (the RTC keeps UTC)\r\n"
       "  tz [POSIX-TZ]          show or set the timezone, e.g. tz CET-1CEST,M3.5.0,M10.5.0/3\r\n"
       "  rtc                    RTC time and wake counters\r\n"
+      "  wifi                   show the Wi-Fi network used for NTP (temporary, until #20)\r\n"
+      "  wifi ssid NAME         set the network name (spaces allowed)\r\n"
+      "  wifi pass PASSWORD     set the password (empty for an open network); syncs right after\r\n"
+      "  wifi forget            delete the network and password\r\n"
+      "  ntp                    NTP status: server, interval, last sync\r\n"
+      "  ntp server HOST        set the NTP server (default pool.ntp.org)\r\n"
+      "  ntp every H            sync every H hours, 1 to 168 (default 24)\r\n"
+      "  sync                   sync with NTP now\r\n"
       "  temp                   measure the room temperature now (sensor, offset, humidity)\r\n"
       "  offset [C]             show or set the temperature calibration, -10.0 to 10.0 C\r\n"
       "  log                    last 32 wakes: time, cause, redraw, awake time, battery\r\n"
@@ -384,9 +514,10 @@ void print_rtc() {
 
 void print_log() {
   const uint32_t n = g_rtc.log_count < kLogLen ? g_rtc.log_count : kLogLen;
-  Serial.printf("last %lu of %lu wakes (R rtc, T timer, K key, P power-on), battery now %u mV\r\n",
-                static_cast<unsigned long>(n), static_cast<unsigned long>(g_rtc.log_count),
-                battery_mv());
+  Serial.printf(
+      "last %lu of %lu wakes (R rtc, T timer, K key, P power-on), battery now %u mV\r\n"
+      "ntp column: + synced, W no Wi-Fi, D DNS, N no reply, B bad reply, X RTC write failed\r\n",
+      static_cast<unsigned long>(n), static_cast<unsigned long>(g_rtc.log_count), battery_mv());
   for (uint32_t i = g_rtc.log_count - n; i < g_rtc.log_count; ++i) {
     const WakeEntry& e = g_rtc.log[i % kLogLen];
     print_stamp(" ", static_cast<time_t>(e.when));
@@ -398,7 +529,8 @@ void print_log() {
     } else {
       snprintf(redraw, sizeof redraw, "%u regions", e.regions);
     }
-    Serial.printf("  %c  %-10s %5u ms  %4u mV%s%s\r\n", e.cause, redraw, e.awake_ms, e.bat_mv,
+    Serial.printf("  %c  %-10s %5u ms  %4u mV  ntp %c%s%s\r\n", e.cause, redraw, e.awake_ms,
+                  e.bat_mv, e.ntp_result ? e.ntp_result : '-',
                   e.rtc == static_cast<uint8_t>(rtc::Status::Ok) ? "" : "  rtc: ",
                   e.rtc == static_cast<uint8_t>(rtc::Status::Ok)
                       ? ""
@@ -491,6 +623,136 @@ void handle_tz(const String& arg) {
   print_time();
 }
 
+void print_ntp() {
+  char server[kHostLen], ssid[kSsidLen];
+  load_pref_string(kPrefNtpServer, server, sizeof server);
+  load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
+  Serial.printf("ntp server %s, every %u h, Wi-Fi %s\r\n", server[0] ? server : kDefaultNtpServer,
+                g_rtc.ntp_hours,
+                ssid[0] ? ssid : "(none: set it with `wifi ssid` and `wifi pass`)");
+  Serial.printf("syncs since power-on: %lu ok, %lu failed",
+                static_cast<unsigned long>(g_rtc.ntp_ok),
+                static_cast<unsigned long>(g_rtc.ntp_failed));
+  if (g_rtc.ntp_schedule.fails > 0) Serial.printf(" (%u in a row)", g_rtc.ntp_schedule.fails);
+  Serial.print("\r\n");
+  if (g_rtc.ntp_status != 0) {
+    const auto st = static_cast<ntp_sync::Status>(g_rtc.ntp_status);
+    Serial.printf("last try: %s", ntp_sync::status_name(st));
+    if (st == ntp_sync::Status::BadReply) {
+      Serial.printf(" (%s)", ntp::reply_name(static_cast<ntp::Reply>(g_rtc.ntp_reply)));
+    }
+    Serial.printf(", Wi-Fi %u ms, total %u ms\r\n", g_rtc.ntp_wifi_ms, g_rtc.ntp_total_ms);
+  }
+  if (g_rtc.ntp_schedule.last_ok != 0) {
+    print_stamp("last sync", static_cast<time_t>(g_rtc.ntp_schedule.last_ok));
+    Serial.printf(": corrected by %ld ms, round trip %u ms\r\n",
+                  static_cast<long>(g_rtc.ntp_offset_ms), g_rtc.ntp_rtt_ms);
+  }
+  if (g_rtc.wifi_configured) {
+    const int64_t now = time(nullptr);
+    if (ntp::due(g_rtc.ntp_schedule, now, g_rtc.time_set, ntp_interval_s())) {
+      Serial.print("next sync: now\r\n");
+    } else {
+      const int64_t next =
+          g_rtc.ntp_schedule.fails > 0
+              ? g_rtc.ntp_schedule.last_try +
+                    ntp::retry_delay_s(g_rtc.ntp_schedule.fails, g_rtc.time_set, ntp_interval_s())
+              : g_rtc.ntp_schedule.last_ok + ntp_interval_s();
+      print_stamp("next sync", static_cast<time_t>(next));
+      Serial.print("\r\n");
+    }
+  }
+}
+
+// Forget the failures and the last sync, so the next check syncs at once.
+void ntp_sync_soon() { g_rtc.ntp_schedule = {}; }
+
+void handle_wifi(const String& line) {
+  if (line.startsWith("wifi ssid ")) {
+    String name = line.substring(10);
+    name.trim();
+    if (name.isEmpty() || name.length() >= kSsidLen) {
+      Serial.print("network name: 1 to 32 characters\r\n");
+      return;
+    }
+    if (!save_pref_string(kPrefWifiSsid, name.c_str())) {
+      Serial.print("could not save the network name\r\n");
+      return;
+    }
+    // A new network needs its password first: no sync until `wifi pass`.
+    Preferences prefs;
+    if (prefs.begin(kPrefsNamespace, false)) {
+      prefs.remove(kPrefWifiPass);
+      prefs.end();
+    }
+    g_rtc.wifi_configured = false;
+    Serial.printf("network %s; now `wifi pass PASSWORD`\r\n", name.c_str());
+  } else if (line == "wifi pass" || line.startsWith("wifi pass ")) {
+    char ssid[kSsidLen];
+    load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
+    if (ssid[0] == '\0') {
+      Serial.print("set the network first: `wifi ssid NAME`\r\n");
+      return;
+    }
+    const String pw = line.length() > 10 ? line.substring(10) : String();
+    if (!pw.isEmpty() && (pw.length() < 8 || pw.length() >= kPassLen)) {
+      Serial.print("password: 8 to 63 characters, or nothing for an open network\r\n");
+      return;
+    }
+    if (!save_pref_string(kPrefWifiPass, pw.c_str())) {
+      Serial.print("could not save the password\r\n");
+      return;
+    }
+    g_rtc.wifi_configured = true;
+    Serial.print("password saved; syncing...\r\n");
+    ntp_sync_soon();  // loop() runs it
+  } else if (line == "wifi forget") {
+    Preferences prefs;
+    if (prefs.begin(kPrefsNamespace, false)) {
+      prefs.remove(kPrefWifiSsid);
+      prefs.remove(kPrefWifiPass);
+      prefs.end();
+    }
+    g_rtc.wifi_configured = false;
+    Serial.print("Wi-Fi network forgotten; NTP is off\r\n");
+  } else {
+    char ssid[kSsidLen];
+    load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
+    Serial.printf("Wi-Fi network: %s\r\n", ssid[0] ? ssid : "(none)");
+  }
+}
+
+void handle_ntp(const String& line) {
+  if (line.startsWith("ntp server ")) {
+    String host = line.substring(11);
+    host.trim();
+    if (host.isEmpty() || host.length() >= kHostLen || host.indexOf(' ') >= 0) {
+      Serial.print("ntp server takes a host name, e.g. `ntp server pool.ntp.org`\r\n");
+      return;
+    }
+    if (!save_pref_string(kPrefNtpServer, host.c_str())) {
+      Serial.print("could not save the server\r\n");
+      return;
+    }
+    ntp_sync_soon();
+  } else if (line.startsWith("ntp every ")) {
+    const long h = line.substring(10).toInt();
+    if (h < 1 || h > kMaxNtpHours) {
+      Serial.print("ntp every takes 1 to 168 (hours)\r\n");
+      return;
+    }
+    g_rtc.ntp_hours = static_cast<uint16_t>(h);
+    Preferences prefs;
+    bool ok = false;
+    if (prefs.begin(kPrefsNamespace, false)) {
+      ok = prefs.putUShort(kPrefNtpHours, g_rtc.ntp_hours) == sizeof(uint16_t);
+      prefs.end();
+    }
+    if (!ok) Serial.print("could not save the interval: it is lost at power-off\r\n");
+  }
+  print_ntp();
+}
+
 void handle_line(const String& line) {
   int y, mo, d, h, mi;
   if (line.startsWith("set ") &&
@@ -506,6 +768,16 @@ void handle_line(const String& line) {
     String arg = line.substring(2);
     arg.trim();
     handle_tz(arg);
+  } else if (line == "wifi" || line.startsWith("wifi ")) {
+    handle_wifi(line);
+  } else if (line == "ntp" || line.startsWith("ntp ")) {
+    handle_ntp(line);
+  } else if (line == "sync") {
+    Serial.print("syncing (Wi-Fi on, up to ~15 s)...\r\n");
+    run_ntp_sync();
+    print_ntp();
+    print_time();
+    if (current_face() != g_rtc.shown) update_display(false);
   } else if (line == "log") {
     print_log();
   } else if (line == "temp") {
@@ -584,11 +856,14 @@ void setup() {
     g_lcd.begin(reinit);
     if (!reinit && g_rtc.soft_setup) g_lcd.reapply_setup();
     const uint8_t regions = reinit ? (update_display(true), kReinit) : update_display(false);
+    // After the redraw, so the face is never late because of Wi-Fi.
+    const char ntp_letter = maybe_ntp_sync();
+    if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
     log_wake(key                               ? 'K'
              : cause == ESP_SLEEP_WAKEUP_TIMER ? 'T'
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
                                                : '?',
-             rtc_status, regions);
+             rtc_status, regions, ntp_letter);
     // Minute tick: back to sleep at once. Looking for a USB host costs time
     // on every wake; to use serial after plugging in, press KEY.
     if (!key) deep_sleep();
@@ -609,13 +884,14 @@ void setup() {
     memcpy(g_rtc.log, saved_log, sizeof saved_log);
     g_rtc.temp_offset_dc = load_temp_offset();
     load_tz();
+    load_ntp_config();
     finish_temp(temp_started);
     rtc_status = sync_from_rtc();
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
     g_lcd.begin(true);
     update_display(true);
-    log_wake('P', rtc_status, kFullRefresh);
+    log_wake('P', rtc_status, kFullRefresh, 0);
   }
 
   // Power-on or KEY: stay awake while a USB host is connected. isPlugged()
@@ -623,13 +899,23 @@ void setup() {
   Serial.begin(115200);
   const uint32_t t0 = millis();
   while (!HWCDC::isPlugged() && millis() - t0 < 1500) delay(10);
-  if (!HWCDC::isPlugged()) deep_sleep();
+  if (!HWCDC::isPlugged()) {
+    // Power-on on battery: the boot sync, recorded in the power-on log entry.
+    // With USB, loop() runs it instead, so the terminal answers at once.
+    if (!woke) {
+      const char ntp_letter = maybe_ntp_sync();
+      if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
+      g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = ntp_letter;
+    }
+    deep_sleep();
+  }
   delay(500);  // let a terminal that was already open reattach
 
   Serial.printf("\r\nwake cause %d (0 = power-on or reset), %lu deep-sleep wakes\r\n",
                 static_cast<int>(cause), static_cast<unsigned long>(g_rtc.wakes));
   if (rtc_status != rtc::Status::Ok) {
-    Serial.printf("RTC at boot: %s. Set the time with `set`.\r\n", rtc::status_name(rtc_status));
+    Serial.printf("RTC at boot: %s. Set the time with `set`, or Wi-Fi (`wifi`) for NTP.\r\n",
+                  rtc::status_name(rtc_status));
   }
   print_rtc();
   print_help();
@@ -652,7 +938,7 @@ void loop() {
         line.remove(line.length() - 1);
         Serial.print("\b \b");
       }
-    } else if (c >= 0x20 && c < 0x7F && line.length() < 64) {
+    } else if (c >= 0x20 && c < 0x7F && line.length() < 100) {
       line += static_cast<char>(c);
       Serial.write(static_cast<uint8_t>(c));
     }
@@ -661,6 +947,10 @@ void loop() {
   if (millis() - last_temp_ms >= kTempPeriodMs) {
     last_temp_ms = millis();
     measure_temp();
+  }
+  if (maybe_ntp_sync() != 0) {
+    print_ntp();
+    print_time();
   }
   if (current_face() != g_rtc.shown) update_display(false);
   if (!HWCDC::isPlugged()) {
