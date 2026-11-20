@@ -15,6 +15,6 @@ The scope. P0 and P1 make v1.0; P2 ships after it (M8). Each row is a GitHub iss
 | F9 | Weather widget | Current + today's forecast from Open-Meteo, refreshed every 30 min | P1 | M6 |
 | F10 | Calendar widget | Next events from a HA calendar entity; direct ICS URL as follow-up | P2 | M8 |
 | F11 | Room temperature | On-board SHTC3 shown on the clock face; offset calibration in config; external SHT40 if calibration isn't enough | P1 | M2 |
-| F12 | NTP synchronization | Sync at boot and every 6 h against a configurable server, POSIX TZ with DST, written to the RTC; runs from the RTC when Wi-Fi is down | P0 | M2 |
+| F12 | NTP synchronization | Sync at boot and daily against a configurable server, POSIX TZ with DST, written to the RTC; runs from the RTC when Wi-Fi is down | P0 | M2 |
 
 Implied foundations (M2): RTC driver, Wi-Fi provisioning, offline alarm guarantee.
