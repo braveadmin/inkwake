@@ -18,6 +18,11 @@ constexpr int kTimeBaseline = 192;
 constexpr int kTempBaseline = 266;
 constexpr int kDigitGap = 6;  // between the two digits of a pair
 constexpr int kMargin = 2;    // around field regions
+// Wi-Fi failure mark, top right: a 15x11 Wi-Fi fan, a gap, a 3 px "!".
+constexpr int kMarkW = 23;
+constexpr int kMarkH = 12;
+constexpr int kMarkX = Framebuffer::kWidth - kMarkW - 6;
+constexpr int kMarkY = 4;
 
 const char* const kWeekdays[] = {"Monday", "Tuesday",  "Wednesday", "Thursday",
                                  "Friday", "Saturday", "Sunday"};
@@ -88,6 +93,26 @@ char digit(FaceState s, FaceRegion r) {
   }
 }
 
+// Three arcs and a dot, opening upwards, then "!".
+void draw_wifi_mark(Framebuffer& fb) {
+  const int cx = kMarkX + 7;           // fan centre (bottom middle)
+  const int cy = kMarkY + kMarkH - 1;  // bottom row
+  for (int y = kMarkY; y < kMarkY + kMarkH; ++y) {
+    for (int x = kMarkX; x < kMarkX + 15; ++x) {
+      const int dx = x - cx;
+      const int dy = cy - y;                // up is positive
+      if (std::abs(dx) > dy + 1) continue;  // outside the 90 degree fan
+      const int r2 = dx * dx + dy * dy;
+      const bool dot = r2 <= 2;
+      const bool arc = (r2 >= 16 && r2 <= 30) || (r2 >= 64 && r2 <= 90) || (r2 >= 132 && r2 <= 168);
+      if (dot || arc) fb.set(x, y, true);
+    }
+  }
+  const int bx = kMarkX + kMarkW - 3;
+  fb.fill(Rect{bx, kMarkY, 3, kMarkH - 4}, true);
+  fb.fill(Rect{bx, kMarkY + kMarkH - 2, 3, 2}, true);
+}
+
 bool same_date(const FaceState& a, const FaceState& b) {
   if (!a.time_set || !b.time_set) return a.time_set == b.time_set;
   return a.weekday == b.weekday && a.day == b.day && a.month == b.month;
@@ -101,6 +126,8 @@ Rect face_region(FaceRegion region) {
       return text_band(fonts::kText30, kDateBaseline);
     case FaceRegion::Temp:
       return text_band(fonts::kText30, kTempBaseline);
+    case FaceRegion::WifiMark:
+      return Rect{kMarkX - kMargin, kMarkY - kMargin, kMarkW + 2 * kMargin, kMarkH + 2 * kMargin};
     case FaceRegion::Count:
       return {};
     default: {
@@ -133,6 +160,8 @@ void render_face(Framebuffer& fb, const FaceState& s) {
 
   format_temp(s.temp_dc, buf, sizeof buf);
   draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTempBaseline, buf);
+
+  if (s.wifi_failed) draw_wifi_mark(fb);
 }
 
 size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out) {
@@ -143,6 +172,7 @@ size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out) {
   }
   if (!same_date(before, after)) out[n++] = face_region(FaceRegion::Date);
   if (before.temp_dc != after.temp_dc) out[n++] = face_region(FaceRegion::Temp);
+  if (before.wifi_failed != after.wifi_failed) out[n++] = face_region(FaceRegion::WifiMark);
   return n;
 }
 

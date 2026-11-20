@@ -1,0 +1,239 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-only -->
+<!-- inkwake settings page (ADR-0016). Built into the firmware by tools/gen_web.py:
+     edit this file, then run `python3 tools/gen_web.py` and commit both. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>inkwake</title>
+<style>
+:root{--bg:#f4f3ef;--card:#fff;--ink:#1c1c1c;--muted:#6b6b6b;--line:#d9d7d0;--accent:#1c1c1c;--ok:#1d7a3a;--bad:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--card:#222;--ink:#eee;--muted:#a0a0a0;--line:#3a3a3a;--accent:#eee;--ok:#5cc47e;--bad:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:480px;margin:0 auto;padding:16px}
+h1{font-size:1.5rem;margin:8px 0 16px}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+h2{font-size:1.1rem;margin:0 0 12px}
+label{display:block;font-size:.9rem;color:var(--muted);margin:12px 0 4px}
+input,select,button{font:inherit;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+button{background:var(--accent);color:var(--bg);border:0;font-weight:600;margin-top:16px;cursor:pointer}
+button.link{background:none;color:var(--muted);width:auto;padding:4px 0;margin:0;font-weight:400;text-decoration:underline}
+button:disabled{opacity:.5}
+ul{list-style:none;margin:0;padding:0}
+li label{display:flex;align-items:center;gap:10px;margin:0;padding:10px 4px;border-bottom:1px solid var(--line);color:var(--ink);font-size:1rem;cursor:pointer}
+li input{width:auto;margin:0}
+li .sig{margin-left:auto;color:var(--muted);font-size:.85rem}
+.row{display:flex;justify-content:space-between;align-items:center}
+.hint{color:var(--muted);font-size:.85rem;margin:8px 0 0}
+#status{min-height:1.4em;margin-top:12px;font-weight:600}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>inkwake</h1>
+
+<section id="wifi">
+  <div class="row"><h2>Wi-Fi</h2><button class="link" id="rescan" type="button">Scan again</button></div>
+  <ul id="nets"><li class="hint">Looking for networks...</li></ul>
+  <label for="ssid">Network name</label>
+  <input id="ssid" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32">
+  <label for="pass">Password</label>
+  <input id="pass" type="password" autocomplete="off" maxlength="63">
+  <label style="display:flex;gap:8px;align-items:center"><input id="show" type="checkbox" style="width:auto"> Show password</label>
+  <p class="hint">2.4 GHz networks only. Leave the password empty for an open network.</p>
+</section>
+
+<section id="time">
+  <h2>Timezone</h2>
+  <select id="zone"></select>
+  <div id="customBox" class="hidden">
+    <label for="custom">POSIX TZ string</label>
+    <input id="custom" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="63" placeholder="CET-1CEST,M3.5.0,M10.5.0/3">
+  </div>
+</section>
+
+<button id="save" type="button">Save and connect</button>
+<div id="status"></div>
+<p class="hint">The clock's screen shows the result too. If this page stops answering, look there.</p>
+</main>
+
+<script>
+"use strict";
+// [label, IANA name used to preselect from the phone's zone, POSIX TZ]
+const ZONES = [
+  ["Central Europe (Madrid, Paris, Berlin, Rome)", ["Europe/Madrid","Europe/Paris","Europe/Berlin","Europe/Rome","Europe/Amsterdam","Europe/Brussels","Europe/Vienna","Europe/Zurich","Europe/Stockholm","Europe/Oslo","Europe/Copenhagen","Europe/Warsaw","Europe/Prague","Europe/Budapest","Europe/Andorra","Europe/Luxembourg","Europe/Monaco","Europe/Belgrade","Europe/Zagreb","Europe/Ljubljana","Europe/Bratislava","Europe/Malta","Africa/Ceuta"], "CET-1CEST,M3.5.0,M10.5.0/3"],
+  ["UK (London)", ["Europe/London"], "GMT0BST,M3.5.0/1,M10.5.0"],
+  ["Ireland (Dublin)", ["Europe/Dublin"], "GMT0IST,M3.5.0/1,M10.5.0"],
+  ["Portugal, Canary Islands", ["Europe/Lisbon","Atlantic/Canary","Atlantic/Madeira"], "WET0WEST,M3.5.0/1,M10.5.0"],
+  ["Eastern Europe (Athens, Helsinki, Kyiv)", ["Europe/Athens","Europe/Helsinki","Europe/Kyiv","Europe/Kiev","Europe/Bucharest","Europe/Sofia","Europe/Riga","Europe/Vilnius","Europe/Tallinn"], "EET-2EEST,M3.5.0/3,M10.5.0/4"],
+  ["Turkey (Istanbul)", ["Europe/Istanbul"], "<+03>-3"],
+  ["Moscow", ["Europe/Moscow"], "MSK-3"],
+  ["US Eastern (New York)", ["America/New_York","America/Detroit","America/Toronto"], "EST5EDT,M3.2.0,M11.1.0"],
+  ["US Central (Chicago)", ["America/Chicago","America/Winnipeg"], "CST6CDT,M3.2.0,M11.1.0"],
+  ["US Mountain (Denver)", ["America/Denver","America/Edmonton"], "MST7MDT,M3.2.0,M11.1.0"],
+  ["Arizona (Phoenix)", ["America/Phoenix"], "MST7"],
+  ["US Pacific (Los Angeles)", ["America/Los_Angeles","America/Vancouver"], "PST8PDT,M3.2.0,M11.1.0"],
+  ["Alaska", ["America/Anchorage"], "AKST9AKDT,M3.2.0,M11.1.0"],
+  ["Hawaii", ["Pacific/Honolulu"], "HST10"],
+  ["Mexico City", ["America/Mexico_City"], "CST6"],
+  ["Bogota, Lima", ["America/Bogota","America/Lima"], "<-05>5"],
+  ["Sao Paulo, Buenos Aires", ["America/Sao_Paulo","America/Argentina/Buenos_Aires","America/Montevideo"], "<-03>3"],
+  ["South Africa (Johannesburg)", ["Africa/Johannesburg"], "SAST-2"],
+  ["Dubai", ["Asia/Dubai"], "<+04>-4"],
+  ["India", ["Asia/Kolkata","Asia/Calcutta"], "IST-5:30"],
+  ["China, Hong Kong, Singapore", ["Asia/Shanghai","Asia/Hong_Kong","Asia/Singapore","Asia/Taipei","Asia/Manila"], "<+08>-8"],
+  ["Japan, Korea", ["Asia/Tokyo","Asia/Seoul"], "<+09>-9"],
+  ["Perth", ["Australia/Perth"], "AWST-8"],
+  ["Brisbane", ["Australia/Brisbane"], "AEST-10"],
+  ["Sydney, Melbourne", ["Australia/Sydney","Australia/Melbourne","Australia/Hobart","Australia/Canberra"], "AEST-10AEDT,M10.1.0,M4.1.0/3"],
+  ["New Zealand", ["Pacific/Auckland"], "NZST-12NZDT,M9.5.0,M4.1.0/3"],
+  ["UTC", ["UTC","Etc/UTC"], "UTC0"],
+];
+const $ = id => document.getElementById(id);
+let settings = {};
+
+function setStatus(text, cls) {
+  const s = $("status");
+  s.textContent = text;
+  s.className = cls || "";
+}
+
+async function api(path, form) {
+  const opt = form ? {method: "POST", headers: {"Content-Type": "application/x-www-form-urlencoded"},
+                      body: new URLSearchParams(form).toString()} : {};
+  const r = await fetch(path, opt);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+  return body;
+}
+
+function fillZones(current) {
+  const sel = $("zone");
+  sel.innerHTML = "";
+  const phone = (Intl.DateTimeFormat().resolvedOptions().timeZone) || "";
+  let chosen = -1;
+  ZONES.forEach(([label, names, posix], i) => {
+    sel.add(new Option(label, String(i)));
+    if (chosen < 0 && current && posix === current) chosen = i;
+  });
+  sel.add(new Option("Other (POSIX TZ string)", "custom"));
+  // A fresh clock keeps the default zone: prefer the phone's zone then.
+  const phoneIdx = ZONES.findIndex(z => z[1].includes(phone));
+  if (!settings.tz_saved && phoneIdx >= 0) chosen = phoneIdx;
+  if (chosen >= 0) {
+    sel.value = String(chosen);
+  } else {
+    sel.value = "custom";
+    $("custom").value = current || "";
+  }
+  zoneChanged();
+}
+
+function zoneChanged() {
+  $("customBox").classList.toggle("hidden", $("zone").value !== "custom");
+}
+
+function selectedTz() {
+  const v = $("zone").value;
+  return v === "custom" ? $("custom").value.trim() : ZONES[Number(v)][2];
+}
+
+function showNets(list) {
+  const ul = $("nets");
+  ul.innerHTML = "";
+  if (!list.length) {
+    ul.innerHTML = '<li class="hint">No networks found. Type the name below.</li>';
+    return;
+  }
+  for (const n of list) {
+    const li = document.createElement("li");
+    const lab = document.createElement("label");
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "net";
+    radio.checked = n.ssid === $("ssid").value;
+    radio.onchange = () => { $("ssid").value = n.ssid; $("pass").value = ""; $("pass").focus(); };
+    const name = document.createElement("span");
+    name.textContent = n.ssid + (n.open ? " (open)" : "");
+    const sig = document.createElement("span");
+    sig.className = "sig";
+    sig.textContent = n.rssi > -60 ? "strong" : n.rssi > -75 ? "good" : "weak";
+    lab.append(radio, name, sig);
+    li.append(lab);
+    ul.append(li);
+  }
+}
+
+async function scan(fresh) {
+  $("nets").innerHTML = '<li class="hint">Looking for networks...</li>';
+  for (let i = 0; i < 20; i++) {
+    try {
+      const r = await api("/api/scan" + (fresh && i === 0 ? "?fresh=1" : ""));
+      if (!r.scanning) { showNets(r.networks || []); return; }
+    } catch (e) { /* the clock may be busy: retry */ }
+    await new Promise(res => setTimeout(res, 1000));
+  }
+  $("nets").innerHTML = '<li class="hint">Scan failed. Type the network name below.</li>';
+}
+
+async function pollStatus() {
+  for (let i = 0; i < 40; i++) {
+    await new Promise(res => setTimeout(res, 1000));
+    let r;
+    try { r = await api("/api/status"); } catch (e) { continue; }
+    if (r.state === "connected") {
+      setStatus("Connected to " + r.ssid + ". The clock is setting its time and closes setup now.", "ok");
+      return;
+    }
+    if (r.state === "failed") {
+      setStatus("Could not connect to " + r.ssid + ". Check the password and try again.", "bad");
+      $("save").disabled = false;
+      $("pass").focus();
+      return;
+    }
+  }
+  setStatus("No answer from the clock. Look at its screen.", "bad");
+  $("save").disabled = false;
+}
+
+async function save() {
+  const ssid = $("ssid").value;
+  const pass = $("pass").value;
+  const tz = selectedTz();
+  if (!ssid) { setStatus("Pick or type a network name.", "bad"); return; }
+  if (pass && (pass.length < 8 || pass.length > 63)) { setStatus("A Wi-Fi password has 8 to 63 characters.", "bad"); return; }
+  $("save").disabled = true;
+  try {
+    // The phone's clock lets the clock show the time even before NTP answers.
+    await api("/api/settings", {tz: tz, now: String(Math.floor(Date.now() / 1000))});
+    setStatus("Connecting to " + ssid + "...");
+    await api("/api/wifi", {ssid: ssid, pass: pass});
+    await pollStatus();
+  } catch (e) {
+    setStatus(e.message, "bad");
+    $("save").disabled = false;
+  }
+}
+
+async function init() {
+  $("show").onchange = () => { $("pass").type = $("show").checked ? "text" : "password"; };
+  $("zone").onchange = zoneChanged;
+  $("rescan").onclick = () => scan(true);
+  $("save").onclick = save;
+  try {
+    settings = await api("/api/settings");
+  } catch (e) {
+    setStatus("Could not reach the clock: " + e.message, "bad");
+  }
+  if (settings.ssid) $("ssid").value = settings.ssid;
+  fillZones(settings.tz);
+  scan(false);
+}
+init();
+</script>
+</body>
+</html>

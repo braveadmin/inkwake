@@ -28,8 +28,15 @@
 // wake that finds a sync due turns Wi-Fi on, asks the NTP server once, turns
 // Wi-Fi off, and writes the corrected UTC time to the RTC. Failed tries retry
 // with a growing delay (lib/ntp), sooner while the time is not set. Without
-// Wi-Fi the clock just keeps running from the RTC. Wi-Fi credentials come from
-// the temporary `wifi` serial command until provisioning (#20) replaces it.
+// Wi-Fi the clock just keeps running from the RTC.
+//
+// Wi-Fi setup (#20, ADR-0016): at power-on with no network saved, on KEY held
+// 5 s, or `setup` over serial, the clock opens the open network inkwake-XXXX
+// with a captive settings page and shows a QR code that joins it. Setup ends
+// when a network connects (then NTP syncs at once), after 10 min without page
+// activity, or on a KEY press. A failed sync later only shows a small Wi-Fi "!"
+// mark on the face; setup never reopens by itself. The `wifi` serial command
+// stays as a fallback.
 #include <Arduino.h>
 #include <Preferences.h>
 #include <driver/gpio.h>
@@ -47,8 +54,12 @@
 #include "framebuffer.h"
 #include "ntp.h"
 #include "ntp_sync.h"
+#include "portal.h"
+#include "provision.h"
+#include "qrcodegen.h"
 #include "room_temp.h"
 #include "rtc.h"
+#include "setup_screen.h"
 #include "shtc3.h"
 #include "st7305.h"
 #include "tz.h"
@@ -95,7 +106,9 @@ constexpr uint8_t kReinit = 0xFE;  // panel reset + init + full frame
 // Defaults after power-on:
 constexpr uint8_t kDefaultReinitMin = 60;
 constexpr bool kDefaultSoftSetup = true;
-constexpr uint32_t kTempPeriodMs = 60'000;  // while awake on USB
+constexpr uint32_t kTempPeriodMs = 60'000;      // while awake on USB
+constexpr uint32_t kKeyHoldMs = 5'000;          // KEY held this long opens Wi-Fi setup
+constexpr uint32_t kSetupIdleMs = 10 * 60'000;  // setup closes after this without page activity
 constexpr char kPrefsNamespace[] = "inkwake";
 constexpr char kPrefTempOffset[] = "temp_off";               // int16, tenths of a degree C
 constexpr char kPrefTz[] = "tz";                             // POSIX TZ string
@@ -166,6 +179,10 @@ FaceState current_face() {
                   ? kNoTemp
                   : shtc3::apply_offset(g_rtc.temp_raw_dc, g_rtc.temp_offset_dc);
   s.time_set = g_rtc.time_set;
+  // Last sync failed (Wi-Fi, DNS or server): small mark until one succeeds.
+  const auto ntp = static_cast<ntp_sync::Status>(g_rtc.ntp_status);
+  s.wifi_failed = g_rtc.wifi_configured && g_rtc.ntp_status != 0 && ntp != ntp_sync::Status::Ok &&
+                  ntp != ntp_sync::Status::NoWifiConfig;
   return s;
 }
 
@@ -447,13 +464,106 @@ bool int_needs_pullup() {
   esp_deep_sleep_start();
 }
 
+// ---- Wi-Fi setup (#20) ----
+
+void ntp_sync_soon();
+
+void show_setup(portal::Screen screen, const char* ap, const char* ssid) {
+  switch (screen) {
+    case portal::Screen::Setup:
+    case portal::Screen::Failed: {
+      char text[64];
+      static uint8_t qr[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+      static uint8_t tmp[qrcodegen_BUFFER_LEN_FOR_VERSION(10)];
+      if (provision::wifi_qr_text(ap, text, sizeof text) &&
+          qrcodegen_encodeText(text, tmp, qr, qrcodegen_Ecc_LOW, 1, 10, qrcodegen_Mask_AUTO,
+                               true)) {
+        render_setup(g_fb, qr, ap, screen == portal::Screen::Failed ? kRetryTitle : kSetupTitle);
+      } else {
+        render_message(g_fb, "Join Wi-Fi", ap);
+      }
+      break;
+    }
+    case portal::Screen::Connecting:
+      render_message(g_fb, "Connecting to", ssid);
+      break;
+    case portal::Screen::Connected:
+      render_message(g_fb, "Connected to", ssid);
+      break;
+  }
+  g_lcd.refresh_full(g_fb);
+}
+
+void setup_load(char* ssid, size_t ssid_n, char* tz, size_t tz_n, bool& tz_saved) {
+  load_pref_string(kPrefWifiSsid, ssid, ssid_n);
+  snprintf(tz, tz_n, "%s", g_rtc.tz);
+  tz_saved = false;
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, true)) {
+    tz_saved = prefs.isKey(kPrefTz);
+    prefs.end();
+  }
+}
+
+bool setup_apply_tz(const char* posix) { return use_tz(posix) && save_tz(g_rtc.tz); }
+
+// The phone's clock, good to a second or so: only used while the clock has no
+// time at all; NTP corrects it right after setup.
+void setup_offer_time(time_t utc) {
+  if (!g_rtc.time_set && utc >= kMinValidTime) set_clock(utc);
+}
+
+bool setup_save_wifi(const char* ssid, const char* pass) {
+  if (!save_pref_string(kPrefWifiSsid, ssid) || !save_pref_string(kPrefWifiPass, pass)) {
+    return false;
+  }
+  g_rtc.wifi_configured = true;
+  return true;
+}
+
+bool setup_cancel() { return digitalRead(kKeyPin) == LOW; }
+
+const portal::Hooks kSetupHooks = {show_setup,       setup_load,      setup_apply_tz,
+                                   setup_offer_time, setup_save_wifi, setup_cancel};
+
+// True if KEY stays down until `until_ms` after boot.
+bool key_held_until(uint32_t until_ms) {
+  while (digitalRead(kKeyPin) == LOW) {
+    if (millis() >= until_ms) return true;
+    delay(10);
+  }
+  return false;
+}
+
+// Runs setup mode, then syncs if a network was set and redraws the face.
+// Returns the NTP log letter (0 if no sync ran).
+char run_setup(bool verbose) {
+  while (digitalRead(kKeyPin) == LOW) delay(10);  // the hold that opened it is no cancel
+  delay(50);                                      // debounce the release
+  if (verbose) {
+    Serial.print("Wi-Fi setup: join the inkwake-XXXX network shown on the screen\r\n");
+    Serial.flush();
+  }
+  const portal::Outcome o = portal::run(kSetupHooks, kSetupIdleMs);
+  if (verbose) Serial.printf("Wi-Fi setup %s\r\n", portal::outcome_name(o));
+  char letter = 0;
+  if (o == portal::Outcome::Connected) {
+    ntp_sync_soon();
+    letter = run_ntp_sync();
+  }
+  while (digitalRead(kKeyPin) == LOW) delay(10);  // a press that cancelled is no new hold
+  update_display(true);
+  return letter;
+}
+
 void print_help() {
   Serial.print(
       "\r\ninkwake clock (M2)\r\n"
       "  set YYYY-MM-DD HH:MM   set the clock, in local time (the RTC keeps UTC)\r\n"
       "  tz [POSIX-TZ]          show or set the timezone, e.g. tz CET-1CEST,M3.5.0,M10.5.0/3\r\n"
       "  rtc                    RTC time and wake counters\r\n"
-      "  wifi                   show the Wi-Fi network used for NTP (temporary, until #20)\r\n"
+      "  setup                  Wi-Fi setup page (same as holding KEY 5 s)\r\n"
+      "  wifi                   show the Wi-Fi network used for NTP\r\n"
       "  wifi ssid NAME         set the network name (spaces allowed)\r\n"
       "  wifi pass PASSWORD     set the password (empty for an open network); syncs right after\r\n"
       "  wifi forget            delete the network and password\r\n"
@@ -778,6 +888,9 @@ void handle_line(const String& line) {
     print_ntp();
     print_time();
     if (current_face() != g_rtc.shown) update_display(false);
+  } else if (line == "setup") {
+    run_setup(true);
+    print_ntp();
   } else if (line == "log") {
     print_log();
   } else if (line == "temp") {
@@ -864,6 +977,10 @@ void setup() {
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
                                                : '?',
              rtc_status, regions, ntp_letter);
+    if (key && key_held_until(kKeyHoldMs)) {
+      const char letter = run_setup(false);
+      if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
+    }
     // Minute tick: back to sleep at once. Looking for a USB host costs time
     // on every wake; to use serial after plugging in, press KEY.
     if (!key) deep_sleep();
@@ -892,6 +1009,11 @@ void setup() {
     g_lcd.begin(true);
     update_display(true);
     log_wake('P', rtc_status, kFullRefresh, 0);
+    // First boot (or after `wifi forget`): open setup right away.
+    if (!g_rtc.wifi_configured) {
+      const char letter = run_setup(false);
+      if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
+    }
   }
 
   // Power-on or KEY: stay awake while a USB host is connected. isPlugged()
@@ -914,7 +1036,7 @@ void setup() {
   Serial.printf("\r\nwake cause %d (0 = power-on or reset), %lu deep-sleep wakes\r\n",
                 static_cast<int>(cause), static_cast<unsigned long>(g_rtc.wakes));
   if (rtc_status != rtc::Status::Ok) {
-    Serial.printf("RTC at boot: %s. Set the time with `set`, or Wi-Fi (`wifi`) for NTP.\r\n",
+    Serial.printf("RTC at boot: %s. Set the time with `set`, or Wi-Fi (`setup`) for NTP.\r\n",
                   rtc::status_name(rtc_status));
   }
   print_rtc();
@@ -942,6 +1064,18 @@ void loop() {
       line += static_cast<char>(c);
       Serial.write(static_cast<uint8_t>(c));
     }
+  }
+  // KEY held 5 s while awake: Wi-Fi setup.
+  static uint32_t key_down_ms = 0;
+  if (digitalRead(kKeyPin) == LOW) {
+    if (key_down_ms == 0) key_down_ms = millis() | 1;
+    if (millis() - key_down_ms >= kKeyHoldMs) {
+      run_setup(true);
+      key_down_ms = 0;
+      print_ntp();
+    }
+  } else {
+    key_down_ms = 0;
   }
   static uint32_t last_temp_ms = millis();
   if (millis() - last_temp_ms >= kTempPeriodMs) {

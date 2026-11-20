@@ -20,15 +20,25 @@ struct FaceState {
   uint8_t month = 1;          // 1-12
   int16_t temp_dc = kNoTemp;  // room temperature in tenths of a degree C
   bool time_set = true;       // false: the clock lost its time; shows --:-- and "Time not set"
+  bool wifi_failed = false;   // last Wi-Fi sync failed: small Wi-Fi "!" mark top right (#20)
 
   bool operator==(const FaceState& o) const {
     return time_set == o.time_set && hour == o.hour && minute == o.minute && weekday == o.weekday &&
-           day == o.day && month == o.month && temp_dc == o.temp_dc;
+           day == o.day && month == o.month && temp_dc == o.temp_dc && wifi_failed == o.wifi_failed;
   }
   bool operator!=(const FaceState& o) const { return !(*this == o); }
 };
 
-enum class FaceRegion : uint8_t { HourTens, HourOnes, MinuteTens, MinuteOnes, Date, Temp, Count };
+enum class FaceRegion : uint8_t {
+  HourTens,
+  HourOnes,
+  MinuteTens,
+  MinuteOnes,
+  Date,
+  Temp,
+  WifiMark,
+  Count
+};
 constexpr size_t kFaceRegions = static_cast<size_t>(FaceRegion::Count);
 
 // Screen area a field may draw into, inside the panel.

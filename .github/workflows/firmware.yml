@@ -24,7 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y clang-format
-      - run: find src lib test spike \( -name '*.cpp' -o -name '*.h' \) | xargs clang-format --dry-run --Werror
+      # lib/qrcodegen is vendored as is (Nayuki, MIT): not reformatted.
+      - run: find src lib test spike -path lib/qrcodegen -prune -o \( -name '*.cpp' -o -name '*.h' \) -print | xargs clang-format --dry-run --Werror
+      - name: web page header matches web/index.html
+        run: python3 tools/gen_web.py --check
 
   test:
     runs-on: ubuntu-24.04
