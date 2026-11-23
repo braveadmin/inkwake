@@ -55,6 +55,7 @@
 #include "framebuffer.h"
 #include "ntp.h"
 #include "ntp_sync.h"
+#include "panel_status.h"
 #include "portal.h"
 #include "provision.h"
 #include "qrcodegen.h"
@@ -72,7 +73,7 @@ namespace {
 constexpr int kKeyPin = 18;                   // active low, external pull-up; wakes from deep sleep
 constexpr int kAmpPin = 46;                   // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;                    // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E001E;       // changed with the RtcState layout
+constexpr uint32_t kMagic = 0x1A7E001F;       // changed with the RtcState layout
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -95,18 +96,19 @@ struct WakeEntry {
   char ntp_result;    // 0 = no sync on this wake, else ntp_sync::status_letter()
   uint16_t awake_ms;  // from boot to the display update done
   uint16_t bat_mv;
+  uint8_t panel;   // RDDPM byte read at the start of the wake (panel_status.h)
+  char panel_fix;  // - none, R recovered, F recovery failed, ? no answer
 };
 constexpr size_t kLogLen = 32;
 constexpr uint8_t kFullRefresh = 0xFF;
 constexpr uint8_t kReinit = 0xFE;  // panel reset + init + full frame
-// The panel now and then loses its setup during a wake (2026-11-19/20: frozen
-// image until `init`; suspected: its RST/CS lines float while the ESP32 boots
-// from deep sleep). Restarting it on minute wakes bounds how long a freeze
-// lasts. Every minute wake re-sends the setup without a reset (`soft`, not
-// visible); a full restart (visible redraw) runs every `reinit N` minutes.
-// Defaults after power-on:
+// Panel freezes and latch-ups on battery (#25). Every wake reads the panel's
+// power-mode status and restarts the panel (sleep in, reset, setup, full
+// frame) if the booster, sleep-out or display-on bit is off. A scheduled
+// restart every `reinit N` minutes stays as a safety net for freezes the
+// status does not show. Defaults after power-on:
 constexpr uint8_t kDefaultReinitMin = 60;
-constexpr bool kDefaultSoftSetup = true;
+constexpr St7305::WriteMode kDefaultPanelMode = St7305::WriteMode::LowPower;
 constexpr uint32_t kTempPeriodMs = 60'000;      // while awake on USB
 constexpr uint32_t kKeyHoldMs = 5'000;          // KEY held this long opens Wi-Fi setup
 constexpr uint32_t kSetupIdleMs = 10 * 60'000;  // setup closes after this without page activity
@@ -136,7 +138,7 @@ struct RtcState {
   bool int_pullup;       // GPIO15 has no external pull-up: use the internal one in sleep
   bool time_set;         // false while the RTC reports its time lost
   uint8_t reinit_min;    // restart the panel when minute % reinit_min == 0; 0 = never
-  bool soft_setup;       // re-send the panel setup on the other minute wakes
+  uint8_t panel_mode;    // St7305::WriteMode
   uint32_t log_count;    // entries ever written; the newest is at (log_count - 1) % kLogLen
   WakeEntry log[kLogLen];
   // Added after `log` so the log, kept across resets, stays where it was.
@@ -161,6 +163,10 @@ struct RtcState {
   // Battery (#36), read on every wake.
   uint16_t bat_mv;    // last averaged reading
   uint8_t bat_level;  // battery::Level, with hysteresis
+  // Panel health (#25), counted since power-on.
+  uint32_t panel_recoveries;  // restarts because the status read showed a problem
+  uint32_t panel_failed;      // ... after which the status still was not ok
+  uint32_t panel_no_answer;   // wakes where the status read got no answer
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -433,7 +439,8 @@ void measure_battery() {
       battery::classify(static_cast<battery::Level>(g_rtc.bat_level), g_rtc.bat_mv));
 }
 
-void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_letter) {
+void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_letter,
+              uint8_t panel = 0, char panel_fix = '-') {
   WakeEntry& e = g_rtc.log[g_rtc.log_count++ % kLogLen];
   e.when = static_cast<uint32_t>(time(nullptr));
   e.cause = cause;
@@ -442,6 +449,29 @@ void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_lett
   e.ntp_result = ntp_letter;
   e.awake_ms = static_cast<uint16_t>(millis());
   e.bat_mv = g_rtc.bat_mv;
+  e.panel = panel;
+  e.panel_fix = panel_fix;
+}
+
+// Light sleep for the panel's datasheet waits on battery minute wakes, instead
+// of burning ~40 mA in delay(). DC/CS/RST are held so the panel sees no glitch.
+void nap(uint32_t ms) {
+  St7305::hold_pins(true);
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(ms) * 1000);
+  esp_light_sleep_start();
+  St7305::hold_pins(false);
+}
+
+// Restarts the panel and redraws everything. bad = the status read showed a
+// problem: counted, and the status read again. Returns the log letter.
+char restart_panel(bool bad) {
+  g_lcd.recover();
+  update_display(true);
+  if (!bad) return '-';
+  g_rtc.panel_recoveries++;
+  if (panel_status::classify(g_lcd.read_power_mode()) == panel_status::Health::Ok) return 'R';
+  g_rtc.panel_failed++;
+  return 'F';
 }
 
 // INT is open drain. Checks for an external pull-up by pulling the pin down
@@ -599,7 +629,10 @@ void print_help() {
       "  full                   full redraw\r\n"
       "  init                   restart the panel (reset + init) and redraw\r\n"
       "  reinit N               restart the panel every N minutes on minute wakes (0 = never)\r\n"
-      "  soft 1|0               re-send the panel setup on every other minute wake\r\n"
+      "  panel                  panel status read-back, write mode, recoveries\r\n"
+      "  panel lpm|hpm          write frames in low power mode (default) or switch to high\r\n"
+      "  recover                restart the panel as after a bad status (sleep in, reset, "
+      "setup)\r\n"
       "  sleep                  deep sleep now, also on USB power (KEY wakes and stays awake)\r\n"
       "  box                    partial-refresh check: black square in the top-left corner\r\n"
       "  help\r\n"
@@ -648,7 +681,9 @@ void print_log() {
   const uint32_t n = g_rtc.log_count < kLogLen ? g_rtc.log_count : kLogLen;
   Serial.printf(
       "last %lu of %lu wakes (R rtc, T timer, K key, P power-on), battery now %u mV\r\n"
-      "ntp column: + synced, W no Wi-Fi, D DNS, N no reply, B bad reply, X RTC write failed\r\n",
+      "ntp column: + synced, W no Wi-Fi, D DNS, N no reply, B bad reply, X RTC write failed\r\n"
+      "panel: status byte at wake (DC ok in low power), then - ok, R recovered, F recovery "
+      "failed, ? no answer\r\n",
       static_cast<unsigned long>(n), static_cast<unsigned long>(g_rtc.log_count), battery_mv());
   for (uint32_t i = g_rtc.log_count - n; i < g_rtc.log_count; ++i) {
     const WakeEntry& e = g_rtc.log[i % kLogLen];
@@ -661,13 +696,32 @@ void print_log() {
     } else {
       snprintf(redraw, sizeof redraw, "%u regions", e.regions);
     }
-    Serial.printf("  %c  %-10s %5u ms  %4u mV  ntp %c%s%s\r\n", e.cause, redraw, e.awake_ms,
-                  e.bat_mv, e.ntp_result ? e.ntp_result : '-',
+    Serial.printf("  %c  %-10s %5u ms  %4u mV  ntp %c  panel %02X %c%s%s\r\n", e.cause, redraw,
+                  e.awake_ms, e.bat_mv, e.ntp_result ? e.ntp_result : '-', e.panel,
+                  e.panel_fix ? e.panel_fix : '-',
                   e.rtc == static_cast<uint8_t>(rtc::Status::Ok) ? "" : "  rtc: ",
                   e.rtc == static_cast<uint8_t>(rtc::Status::Ok)
                       ? ""
                       : rtc::status_name(static_cast<rtc::Status>(e.rtc)));
   }
+}
+
+void print_panel() {
+  const uint8_t pm = g_lcd.read_power_mode();
+  const uint32_t st = g_lcd.read_display_status();
+  char text[80];
+  panel_status::describe(pm, text, sizeof text);
+  Serial.printf(
+      "panel power mode %02X: %s\r\n"
+      "display status (raw 32 bits after 0x09) %08lX\r\n"
+      "write mode: %s power; restart every %u min%s\r\n"
+      "since power-on: %lu recoveries (%lu failed), %lu wakes without an answer\r\n",
+      pm, text, static_cast<unsigned long>(st),
+      g_rtc.panel_mode == static_cast<uint8_t>(St7305::WriteMode::LowPower) ? "low" : "high",
+      g_rtc.reinit_min, g_rtc.reinit_min == 0 ? " (off)" : "",
+      static_cast<unsigned long>(g_rtc.panel_recoveries),
+      static_cast<unsigned long>(g_rtc.panel_failed),
+      static_cast<unsigned long>(g_rtc.panel_no_answer));
 }
 
 void print_temp() {
@@ -938,9 +992,22 @@ void handle_line(const String& line) {
     } else {
       Serial.print("reinit takes 0-60\r\n");
     }
-  } else if (line == "soft 1" || line == "soft 0") {
-    g_rtc.soft_setup = line == "soft 1";
-    Serial.printf("panel setup re-sent on minute wakes: %s\r\n", g_rtc.soft_setup ? "on" : "off");
+  } else if (line == "panel") {
+    print_panel();
+  } else if (line == "panel lpm" || line == "panel hpm") {
+    const auto mode =
+        line == "panel lpm" ? St7305::WriteMode::LowPower : St7305::WriteMode::HighPower;
+    g_rtc.panel_mode = static_cast<uint8_t>(mode);
+    g_lcd.set_write_mode(mode);
+    Serial.printf("frames written in %s power mode%s; back to the default after power-off\r\n",
+                  mode == St7305::WriteMode::LowPower ? "low" : "high",
+                  mode == St7305::WriteMode::LowPower ? "" : " (switch per write, +400 ms)");
+  } else if (line == "recover") {
+    // Not counted as a recovery: those count only what the wakes found.
+    const uint8_t before = g_lcd.read_power_mode();
+    restart_panel(false);
+    Serial.printf("panel restarted, status before: %02X\r\n", before);
+    print_panel();
   } else if (line == "init") {
     g_lcd.begin(true);
     update_display(true);
@@ -977,6 +1044,7 @@ void setup() {
   digitalWrite(kAmpPin, LOW);
   pinMode(kKeyPin, INPUT);
 
+  g_lcd.set_write_mode(static_cast<St7305::WriteMode>(g_rtc.panel_mode));
   rtc::begin();
   // Runs while the RTC sync and panel setup happen; read before the redraw.
   const room_temp::Status temp_started = room_temp::start();
@@ -997,9 +1065,23 @@ void setup() {
     measure_battery();
     const bool reinit =
         !key && g_rtc.reinit_min != 0 && current_face().minute % g_rtc.reinit_min == 0;
-    g_lcd.begin(reinit);
-    if (!reinit && g_rtc.soft_setup) g_lcd.reapply_setup();
-    const uint8_t regions = reinit ? (update_display(true), kReinit) : update_display(false);
+    if (!key) g_lcd.set_wait(nap);  // KEY wakes may stay awake on USB: plain delay()
+    g_lcd.begin(false);
+    const uint8_t panel = g_lcd.read_power_mode();
+    const auto health = panel_status::classify(panel);
+    char panel_fix = '-';
+    uint8_t regions;
+    if (reinit || health == panel_status::Health::Bad) {
+      panel_fix = restart_panel(health == panel_status::Health::Bad);
+      regions = kReinit;
+    } else {
+      if (health == panel_status::Health::NoAnswer) {
+        g_rtc.panel_no_answer++;
+        panel_fix = '?';
+      }
+      regions = update_display(false);
+    }
+    g_lcd.set_wait([](uint32_t ms) { delay(ms); });
     // After the redraw, so the face is never late because of Wi-Fi.
     const char ntp_letter = maybe_ntp_sync();
     if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
@@ -1007,7 +1089,7 @@ void setup() {
              : cause == ESP_SLEEP_WAKEUP_TIMER ? 'T'
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
                                                : '?',
-             rtc_status, regions, ntp_letter);
+             rtc_status, regions, ntp_letter, panel, panel_fix);
     if (key && key_held_until(kKeyHoldMs)) {
       const char letter = run_setup(false);
       if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
@@ -1028,7 +1110,8 @@ void setup() {
     g_rtc.int_pullup = pullup;
     g_rtc.log_count = log_count;
     g_rtc.reinit_min = kDefaultReinitMin;
-    g_rtc.soft_setup = kDefaultSoftSetup;
+    g_rtc.panel_mode = static_cast<uint8_t>(kDefaultPanelMode);
+    g_lcd.set_write_mode(kDefaultPanelMode);
     memcpy(g_rtc.log, saved_log, sizeof saved_log);
     g_rtc.temp_offset_dc = load_temp_offset();
     load_tz();
