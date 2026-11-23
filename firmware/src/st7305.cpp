@@ -148,46 +148,6 @@ void St7305::recover() {
   display_on_ = false;
 }
 
-uint8_t St7305::read_power_mode() { return static_cast<uint8_t>(read_bits(0x0A, 8)); }
-
-uint32_t St7305::read_display_status() { return read_bits(0x09, 32); }
-
-// 4-line SPI read status (§7.1.4): 8 command bits with DC low, then the
-// controller drives SDA, which is the MOSI line (GPIO12), shifting out on the
-// falling clock edge. Bit-banged with the SPI peripheral detached, sampling
-// after each rising edge. MOSI is released before the 8th falling edge so the
-// two drivers never fight; its pull-up makes a silent controller read 0xFF.
-uint32_t St7305::read_bits(uint8_t c, int bits) {
-  spi_.end();
-  pinMode(kSck, OUTPUT);
-  pinMode(kMosi, OUTPUT);
-  digitalWrite(kSck, LOW);
-  digitalWrite(kDc, LOW);
-  digitalWrite(kCs, LOW);
-  delayMicroseconds(1);
-  for (int i = 7; i >= 0; --i) {
-    digitalWrite(kMosi, (c >> i) & 1);
-    delayMicroseconds(1);
-    digitalWrite(kSck, HIGH);
-    delayMicroseconds(1);
-    if (i == 0) pinMode(kMosi, INPUT_PULLUP);
-    digitalWrite(kSck, LOW);
-  }
-  digitalWrite(kDc, HIGH);
-  uint32_t v = 0;
-  for (int i = 0; i < bits; ++i) {
-    delayMicroseconds(1);
-    digitalWrite(kSck, HIGH);
-    delayMicroseconds(1);
-    v = (v << 1) | (digitalRead(kMosi) == HIGH ? 1 : 0);
-    digitalWrite(kSck, LOW);
-  }
-  digitalWrite(kCs, HIGH);
-  pinMode(kMosi, OUTPUT);
-  spi_.begin(kSck, -1, kMosi, -1);
-  return v;
-}
-
 void St7305::init_regs() {
   struct Reg {
     uint8_t cmd;

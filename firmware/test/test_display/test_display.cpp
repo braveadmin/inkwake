@@ -9,7 +9,6 @@
 #include "font.h"
 #include "fonts/text30.h"
 #include "framebuffer.h"
-#include "panel_status.h"
 #include "panel_window.h"
 #include "qrcodegen.h"
 #include "setup_screen.h"
@@ -405,37 +404,6 @@ static void test_setup_screen() {
   }
 }
 
-void test_panel_status() {
-  using namespace panel_status;
-  TEST_ASSERT_EQUAL_HEX8(0xDC, kParked);
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::Ok), static_cast<int>(classify(kParked)));
-  // High power mode during a write is fine too.
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::Ok), static_cast<int>(classify(kParked & ~kLowPower)));
-  // Booster off, asleep, display off, or the post-reset default: needs recovery.
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::Bad), static_cast<int>(classify(kParked & ~kBooster)));
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::Bad),
-                    static_cast<int>(classify(kParked & ~kSleepOut)));
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::Bad),
-                    static_cast<int>(classify(kParked & ~kDisplayOn)));
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::Bad), static_cast<int>(classify(0x08)));
-  // Undriven line (pull-up), stuck low, or a low bit set: not the controller.
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::NoAnswer), static_cast<int>(classify(0xFF)));
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::NoAnswer), static_cast<int>(classify(0x00)));
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::NoAnswer), static_cast<int>(classify(0xDD)));
-  TEST_ASSERT_EQUAL(static_cast<int>(Health::NoAnswer), static_cast<int>(classify(0xDE)));
-
-  char text[80];
-  describe(kParked, text, sizeof text);
-  TEST_ASSERT_EQUAL_STRING("booster on, low power, sleep out, normal, display on", text);
-  describe(0x08, text, sizeof text);
-  TEST_ASSERT_EQUAL_STRING("booster OFF, high power, SLEEP IN, normal, display OFF", text);
-  describe(0xFF, text, sizeof text);
-  TEST_ASSERT_EQUAL_STRING("no answer", text);
-  char tiny[5];
-  describe(kParked, tiny, sizeof tiny);
-  TEST_ASSERT_EQUAL_STRING("boos", tiny);
-}
-
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_packing_matches_spike_formula);
@@ -457,6 +425,5 @@ int main(int, char**) {
   RUN_TEST(test_wifi_mark);
   RUN_TEST(test_battery_mark);
   RUN_TEST(test_setup_screen);
-  RUN_TEST(test_panel_status);
   return UNITY_END();
 }

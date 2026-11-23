@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // ST7305 reflective LCD on the Waveshare ESP32-S3-RLCD-4.2: SPI, init, power
-// modes, partial refresh and status read-back. Init values from Waveshare's
-// Apache-2.0 demo (github.com/waveshareteam/ESP32-S3-RLCD-4.2,
-// 09_LVGL_V9_Test/display_bsp.cpp), as proven in the M0 spike. Timings follow
+// modes and partial refresh. Init values from Waveshare's Apache-2.0 demo
+// (github.com/waveshareteam/ESP32-S3-RLCD-4.2, 09_LVGL_V9_Test/display_bsp.cpp),
+// as proven in the M0 spike. Timings follow
 // the Sitronix ST7305 datasheet V0.2 (section numbers below). Address math
-// lives in lib/display/panel_window.h, status decoding in panel_status.h.
+// lives in lib/display/panel_window.h.
+//
+// No status read-back: the ST7305 answers reads on its SDA_OUT pins, which
+// the panel module apparently does not tie to SDA; the board wires SDA
+// straight to GPIO12 (RDDPM read 0xFF with a pull-up on
+// GPIO12, 2026-11-23; TE never pulses either). Firmware cannot see whether
+// the panel is alive.
 #pragma once
 
 #include <Arduino.h>
@@ -46,15 +52,8 @@ class St7305 {
   void refresh(const Framebuffer& fb, const Rect* rects, size_t n);
   void refresh_full(const Framebuffer& fb);
 
-  // RDDPM (0x0A, §8.1.5): the power-mode byte, decoded by panel_status. Read
-  // over the bidirectional data line (§7.1.4); 0xFF when nothing answers.
-  uint8_t read_power_mode();
-  // RDDST (0x09, §8.1.4): 32 bits clocked out after the command, raw, so the
-  // serial console can show whether a dummy bit precedes the 3 status bytes.
-  uint32_t read_display_status();
-
-  // Recovery for a latched controller: sleep in (stops the booster and the
-  // oscillator, §8.1.6), hardware reset, full setup. Like begin(true), the
+  // Full restart: sleep in (stops the booster and the oscillator, §8.1.6),
+  // hardware reset, full setup. Like begin(true), the
   // display stays off until the next refresh writes a frame.
   void recover();
 
@@ -69,7 +68,6 @@ class St7305 {
   void reset();
   void init_regs();
   void display_on();
-  uint32_t read_bits(uint8_t c, int bits);
 
   SPIClass spi_{HSPI};
   WaitFn wait_ = [](uint32_t ms) { delay(ms); };
