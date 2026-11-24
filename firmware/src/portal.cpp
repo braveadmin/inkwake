@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 #include "provision.h"
 #include "tz.h"
@@ -24,6 +25,7 @@ constexpr uint32_t kConnectTimeoutMs = 15'000;
 constexpr uint32_t kLingerMs = 6'000;  // after success, so the page can read the result
 constexpr size_t kMaxNets = 20;
 constexpr size_t kBodyMax = 512;
+constexpr size_t kAlarmsJsonMax = 4096;
 constexpr size_t kTzLen = 64;
 constexpr size_t kSsidLen = provision::kSsidMax + 1;
 constexpr size_t kPassLen = provision::kPassMax + 1;
@@ -60,6 +62,12 @@ struct Shared {
   char try_pass[kPassLen];
   bool want_save;  // `saved` was edited from the page
   bool want_close;
+  // Alarms (#2).
+  char alarms_json[kAlarmsJsonMax];
+  char alarm_error[64];
+  uint32_t alarm_rev;  // bumped after each applied edit
+  bool want_alarm;
+  char alarm_form[kBodyMax];
 };
 
 Shared g;
@@ -279,6 +287,41 @@ esp_err_t handle_status(httpd_req_t* req) {
 
 // Captive portal: every other URL (phones' connectivity checks included) is
 // sent to the page. Doesn't count as activity: phones probe on their own.
+esp_err_t handle_get_alarms(httpd_req_t* req) {
+  touch();
+  std::string body;
+  {
+    std::lock_guard<std::mutex> lock(g.mu);
+    char err[sizeof g.alarm_error * 6];
+    provision::json_escape(g.alarm_error, err, sizeof err);
+    char head[sizeof err + 48];
+    snprintf(head, sizeof head,
+             "{\"rev\":%lu,\"error\":\"%s\",\"alarms\":", static_cast<unsigned long>(g.alarm_rev),
+             err);
+    body = head;
+    body += g.alarms_json[0] ? g.alarms_json : "[]";
+    body += "}";
+  }
+  return send_json(req, "200 OK", body.c_str());
+}
+
+esp_err_t handle_post_alarms(httpd_req_t* req) {
+  touch();
+  char body[kBodyMax];
+  if (!read_body(req, body, sizeof body)) return ESP_OK;
+  uint32_t rev;
+  {
+    std::lock_guard<std::mutex> lock(g.mu);
+    if (g.want_alarm) return send_error(req, "503 Service Unavailable", "busy, try again");
+    memcpy(g.alarm_form, body, sizeof body);
+    g.want_alarm = true;
+    rev = g.alarm_rev;
+  }
+  char buf[48];
+  snprintf(buf, sizeof buf, "{\"rev\":%lu}", static_cast<unsigned long>(rev));
+  return send_json(req, "202 Accepted", buf);
+}
+
 esp_err_t handle_redirect(httpd_req_t* req) {
   httpd_resp_set_status(req, "302 Found");
   httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
@@ -288,7 +331,7 @@ esp_err_t handle_redirect(httpd_req_t* req) {
 
 httpd_handle_t start_server() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-  cfg.max_uri_handlers = 10;
+  cfg.max_uri_handlers = 12;
   cfg.lru_purge_enable = true;  // phones open many sockets; drop the oldest
   cfg.max_open_sockets = 7;
   cfg.stack_size = 8192;
@@ -304,6 +347,8 @@ httpd_handle_t start_server() {
       {"/api/status", HTTP_GET, handle_status, nullptr},
       {"/api/networks", HTTP_POST, handle_networks, nullptr},
       {"/api/close", HTTP_POST, handle_close, nullptr},
+      {"/api/alarms", HTTP_GET, handle_get_alarms, nullptr},
+      {"/api/alarms", HTTP_POST, handle_post_alarms, nullptr},
       {"/*", HTTP_GET, handle_redirect, nullptr},  // last: wildcard
   };
   for (const httpd_uri_t& u : uris) httpd_register_uri_handler(server, &u);
@@ -389,6 +434,9 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
     g.want_scan = g.want_tz = g.want_connect = g.want_save = g.want_close = false;
     g.offered_time = 0;
     hooks.load(g.saved, g.tz, sizeof g.tz, g.tz_saved);
+    g.want_alarm = false;
+    g.alarm_error[0] = '\0';
+    hooks.alarms_json(g.alarms_json, sizeof g.alarms_json);
   }
   WiFi.persistent(false);  // credentials live in our own NVS keys
   WiFi.mode(WIFI_AP_STA);
@@ -432,6 +480,25 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
       g.tz_saved = true;
     }
     if (offered != 0) hooks.offer_time(offered);
+    // Alarm edits: applied here on the caller's task (NVS, display), then the
+    // list is rebuilt for the page.
+    static char form[kBodyMax];
+    bool want_alarm;
+    {
+      std::lock_guard<std::mutex> lock(g.mu);
+      want_alarm = g.want_alarm;
+      if (want_alarm) memcpy(form, g.alarm_form, sizeof form);
+    }
+    if (want_alarm) {
+      const char* err = hooks.alarm_edit(form);
+      static char json[kAlarmsJsonMax];
+      hooks.alarms_json(json, sizeof json);
+      std::lock_guard<std::mutex> lock(g.mu);
+      memcpy(g.alarms_json, json, sizeof json);
+      snprintf(g.alarm_error, sizeof g.alarm_error, "%s", err ? err : "");
+      g.alarm_rev++;
+      g.want_alarm = false;
+    }
     if (want_connect) {
       hooks.show(Screen::Connecting, g.ap, ssid);
       WiFi.scanDelete();

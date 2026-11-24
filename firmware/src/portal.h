@@ -12,7 +12,9 @@
 //   POST /api/networks     form: op=remove|up, ssid; edits the saved list (#33),
 //                          answers {"networks":[names]}
 //   POST /api/close        ends setup
-//   anything else          302 to the page (captive portal probes)
+//   GET  /api/alarms       {"rev":N,"error":"...","alarms":[...]} (#2; list from
+//   Hooks::alarms_json) POST /api/alarms       form for Hooks::alarm_edit; the page polls GET until
+//   rev changes anything else          302 to the page (captive portal probes)
 //
 // Web requests run in the server's own task and only queue work; run() does
 // all Wi-Fi changes and calls the hooks on the caller's task.
@@ -51,6 +53,10 @@ struct Hooks {
   // removed or moved one.
   bool (*save_networks)(const provision::WifiList& nets);
   bool (*cancel)();  // polled; true ends setup
+  // Alarms (#2): JSON array of the alarms into buf (always NUL-terminated).
+  void (*alarms_json)(char* buf, size_t n);
+  // Applies a POST /api/alarms form body. nullptr when done, else a short reason.
+  const char* (*alarm_edit)(const char* form);
 };
 
 const char* outcome_name(Outcome o);

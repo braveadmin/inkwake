@@ -34,6 +34,20 @@ li .sig{margin-left:auto;color:var(--muted);font-size:.85rem}
 #saved li .name{flex:1;overflow-wrap:anywhere}
 #saved li .first{color:var(--muted);font-size:.85rem}
 button.secondary{background:none;color:var(--ink);border:1px solid var(--line);margin-top:8px}
+.alarm{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.alarm .t{font-size:1.4rem;font-weight:600;min-width:4.2ch}
+.alarm .d{flex:1;min-width:0}
+.alarm .d div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alarm .d .sub{color:var(--muted);font-size:.85rem}
+.alarm.off .t,.alarm.off .d{opacity:.45}
+.alarm button{width:auto;margin:0;padding:6px 10px}
+.days{display:flex;gap:4px;flex-wrap:wrap}
+.days label{display:flex;flex:1;justify-content:center;margin:0;padding:8px 0;border:1px solid var(--line);border-radius:8px;color:var(--ink);cursor:pointer;min-width:2.6em}
+.days input{display:none}
+.days label:has(input:checked){background:var(--accent);color:var(--bg)}
+.pair{display:flex;gap:8px}
+.pair button{margin-top:16px}
+#alarmStatus{min-height:1.4em;margin-top:8px}
 </style>
 </head>
 <body>
@@ -71,6 +85,27 @@ button.secondary{background:none;color:var(--ink);border:1px solid var(--line);m
 <button id="done" class="secondary" type="button">Done</button>
 <div id="status"></div>
 <p class="hint">The clock's screen shows the result too. If this page stops answering, look there.</p>
+
+<section id="alarms">
+  <div class="row"><h2>Alarms</h2><button class="link" id="addAlarm" type="button">Add alarm</button></div>
+  <div id="alarmList"><p class="hint">Loading...</p></div>
+  <div id="editor" class="hidden">
+    <label for="aTime">Time</label>
+    <input id="aTime" type="time" required>
+    <label>Days (none = once)</label>
+    <div class="days" id="aDays"></div>
+    <label for="aLabel">Label</label>
+    <input id="aLabel" maxlength="23" autocomplete="off" placeholder="Work">
+    <label style="display:flex;gap:8px;align-items:center"><input id="aOn" type="checkbox" style="width:auto" checked> On</label>
+    <div class="pair">
+      <button id="aSave" type="button">Save alarm</button>
+      <button id="aDel" type="button" class="link hidden">Delete</button>
+      <button id="aCancel" type="button" class="link">Cancel</button>
+    </div>
+  </div>
+  <div id="alarmStatus"></div>
+  <p class="hint">On the clock: tap KEY to snooze 9 minutes, hold it 2 seconds to stop.</p>
+</section>
 </main>
 
 <script>
@@ -298,6 +333,136 @@ async function done() {
   }
 }
 
+// ---- Alarms ----
+const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+let alarms = [], alarmRev = 0, editing = null;
+
+function alarmStatus(text, cls) {
+  const s = $("alarmStatus");
+  s.textContent = text;
+  s.className = cls || "";
+}
+
+function daysText(a) {
+  const names = {daily: "Every day", weekdays: "Mon-Fri", weekends: "Sat, Sun", once: "Once"};
+  if (names[a.days]) return names[a.days];
+  return a.days.split(",").map(p => p.split("-").map(d => d[0].toUpperCase() + d.slice(1)).join("-")).join(", ");
+}
+
+function showAlarms() {
+  const box = $("alarmList");
+  box.innerHTML = "";
+  if (!alarms.length) {
+    box.innerHTML = '<p class="hint">No alarms yet.</p>';
+    return;
+  }
+  for (const a of alarms) {
+    const row = document.createElement("div");
+    row.className = "alarm" + (a.on ? "" : " off");
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = a.time;
+    const d = document.createElement("div");
+    d.className = "d";
+    const l1 = document.createElement("div");
+    l1.textContent = a.label || "Alarm";
+    const l2 = document.createElement("div");
+    l2.className = "sub";
+    l2.textContent = daysText(a) + (a.on && a.next ? " \u00b7 next " + a.next : a.on ? "" : " \u00b7 off");
+    d.append(l1, l2);
+    const tog = document.createElement("button");
+    tog.type = "button";
+    tog.textContent = a.on ? "Turn off" : "Turn on";
+    tog.onclick = () => sendAlarm({op: "save", id: a.id, time: a.time, days: a.days, label: a.label, on: a.on ? "0" : "1"});
+    const ed = document.createElement("button");
+    ed.type = "button";
+    ed.className = "link";
+    ed.textContent = "Edit";
+    ed.onclick = () => openEditor(a);
+    row.append(t, d, ed, tog);
+    box.append(row);
+  }
+}
+
+function openEditor(a) {
+  editing = a;
+  $("editor").classList.remove("hidden");
+  $("aTime").value = a ? a.time : "07:00";
+  $("aLabel").value = a ? a.label : "";
+  $("aOn").checked = a ? a.on : true;
+  const mask = a ? a.mask : 31;
+  document.querySelectorAll("#aDays input").forEach((cb, i) => { cb.checked = !!(mask & (1 << i)); });
+  $("aDel").classList.toggle("hidden", !a);
+  $("aTime").focus();
+}
+
+function closeEditor() {
+  editing = null;
+  $("editor").classList.add("hidden");
+}
+
+async function loadAlarms() {
+  const r = await api("/api/alarms");
+  alarms = r.alarms || [];
+  alarmRev = r.rev;
+  showAlarms();
+  return r;
+}
+
+// The clock applies an edit on its own task: wait until its list changes.
+async function sendAlarm(form) {
+  alarmStatus("Saving...");
+  try {
+    const sent = await api("/api/alarms", form);
+    for (let i = 0; i < 20; i++) {
+      await new Promise(res => setTimeout(res, 250));
+      const r = await api("/api/alarms").catch(() => null);
+      if (!r || r.rev === sent.rev) continue;
+      alarms = r.alarms || [];
+      alarmRev = r.rev;
+      showAlarms();
+      if (r.error) { alarmStatus(r.error, "bad"); return false; }
+      alarmStatus("Saved.", "ok");
+      return true;
+    }
+    alarmStatus("No answer from the clock. Look at its screen.", "bad");
+  } catch (e) {
+    alarmStatus(e.message, "bad");
+  }
+  return false;
+}
+
+async function saveAlarm() {
+  const time = $("aTime").value;
+  if (!/^\d{2}:\d{2}$/.test(time)) { alarmStatus("Pick a time.", "bad"); return; }
+  const picked = DAYS.filter((d, i) => document.querySelectorAll("#aDays input")[i].checked);
+  const form = {op: editing ? "save" : "add", time: time, days: picked.length ? picked.join(",") : "once",
+                label: $("aLabel").value.trim(), on: $("aOn").checked ? "1" : "0"};
+  if (editing) form.id = editing.id;
+  if (await sendAlarm(form)) closeEditor();
+}
+
+async function deleteAlarm() {
+  if (!editing || !confirm("Delete this alarm?")) return;
+  if (await sendAlarm({op: "del", id: editing.id})) closeEditor();
+}
+
+function initAlarms() {
+  const box = $("aDays");
+  DAYS.forEach(d => {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    lab.append(cb, d[0].toUpperCase() + d.slice(1, 2));
+    box.append(lab);
+  });
+  $("addAlarm").onclick = () => openEditor(null);
+  $("aSave").onclick = saveAlarm;
+  $("aDel").onclick = deleteAlarm;
+  $("aCancel").onclick = closeEditor;
+  loadAlarms().catch(e => { $("alarmList").innerHTML = ""; alarmStatus("Could not load alarms: " + e.message, "bad"); });
+}
+
 async function init() {
   $("show").onchange = () => { $("pass").type = $("show").checked ? "text" : "password"; };
   $("zone").onchange = zoneChanged;
@@ -311,6 +476,7 @@ async function init() {
   }
   showSaved(settings.networks || []);
   fillZones(settings.tz);
+  initAlarms();
   scan(false);
 }
 init();

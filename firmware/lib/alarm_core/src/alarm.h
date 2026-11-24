@@ -60,29 +60,44 @@ bool sunrise_active(const Alarm& alarm, const LocalTime& now);
 
 enum class RingState : uint8_t { Idle, Ringing, Snoozed };
 
-// Ringing / snooze state machine. Time is a monotonic minute counter so it
-// survives DST jumps without special cases.
-class Ringer {
- public:
-  explicit Ringer(uint8_t snooze_minutes = 9, uint8_t max_snoozes = 3);
-
-  void trigger(int64_t now_min);
-  // Ignored unless ringing. Past max_snoozes the alarm keeps ringing.
-  void snooze(int64_t now_min);
-  void dismiss();
-  // Call once per minute. Returns true when a snooze has elapsed and
-  // ringing must restart.
-  bool tick(int64_t now_min);
-
-  RingState state() const { return state_; }
-  uint8_t snoozes() const { return snoozes_; }
-
- private:
-  uint8_t snooze_minutes_;
-  uint8_t max_snoozes_;
-  RingState state_ = RingState::Idle;
-  uint8_t snoozes_ = 0;
-  int64_t resume_at_ = 0;
+struct RingConfig {
+  uint16_t snooze_s;        // KEY tap / auto-snooze length
+  uint8_t max_snoozes;      // after this many, a tap is ignored and the timeout gives up
+  uint16_t ring_timeout_s;  // unattended ringing auto-snoozes after this
 };
+constexpr RingConfig kDefaultRing{9 * 60, 3, 10 * 60};
+
+// Ringing / snooze state. Plain data (trivially copyable, all-zero = Idle) so
+// it can live in RTC memory across deep sleep. Times are UTC seconds, which
+// never jump at a DST change.
+struct Ringer {
+  RingState state;
+  uint8_t alarm_id;  // which alarm rang
+  uint8_t snoozes;
+  int64_t since;      // Ringing: when this ring started
+  int64_t resume_at;  // Snoozed: when to ring again
+};
+
+enum class RingEvent : uint8_t {
+  None,
+  Restart,     // snooze over, ring again
+  AutoSnooze,  // rang ring_timeout_s unattended, now snoozed
+  GaveUp,      // rang unattended after the last snooze, now idle
+};
+
+void ring_trigger(Ringer& r, uint8_t alarm_id, int64_t now);
+// Ignored unless ringing. Past max_snoozes the alarm keeps ringing (hold KEY to stop).
+void ring_snooze(Ringer& r, const RingConfig& c, int64_t now);
+void ring_dismiss(Ringer& r);
+// Call on every wake / loop pass.
+RingEvent ring_tick(Ringer& r, const RingConfig& c, int64_t now);
+
+// Beep volume in percent after `elapsed_s` of ringing: starts quiet and
+// rises in steps (ADR-0006: wake-up volume sits around 5-20 %).
+uint8_t ring_volume(uint32_t elapsed_s, uint8_t start_pct, uint8_t max_pct);
+
+// Beep pattern, 1.2 s: four 100 ms beeps 100 ms apart, then 400 ms quiet.
+constexpr uint32_t kBeepCycleMs = 1200;
+bool beep_on(uint32_t ms);
 
 }  // namespace inkwake
