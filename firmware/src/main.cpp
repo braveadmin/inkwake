@@ -37,6 +37,10 @@
 // activity, or on a KEY press. A failed sync later only shows a small Wi-Fi "!"
 // mark on the face; setup never reopens by itself. The `wifi` serial command
 // stays as a fallback.
+//
+// Saved networks (#33): up to 5, in NVS as one list in try order. A sync tries
+// the first, and if it fails, the others a scan finds in range; the one that
+// connects moves to the top. The setup page can remove networks or move them up.
 #include <Arduino.h>
 #include <Preferences.h>
 #include <driver/gpio.h>
@@ -64,6 +68,7 @@
 #include "shtc3.h"
 #include "st7305.h"
 #include "tz.h"
+#include "wifi_list.h"
 
 using namespace inkwake;
 
@@ -114,6 +119,8 @@ constexpr char kPrefTempOffset[] = "temp_off";               // int16, tenths of
 constexpr char kPrefTz[] = "tz";                             // POSIX TZ string
 constexpr size_t kTzLen = 64;                                // including the terminating NUL
 constexpr char kDefaultTz[] = "CET-1CEST,M3.5.0,M10.5.0/3";  // Central Europe
+constexpr char kPrefWifiList[] = "wifi_list";                // blob, provision::encode (#33)
+// Single network saved by firmware before #33: moved into the list on first load.
 constexpr char kPrefWifiSsid[] = "wifi_ssid";
 constexpr char kPrefWifiPass[] = "wifi_pass";
 constexpr char kPrefNtpServer[] = "ntp_server";
@@ -322,10 +329,53 @@ bool save_pref_string(const char* key, const char* value) {
   return ok;
 }
 
-void load_ntp_config() {
-  char ssid[kSsidLen];
+bool save_networks(const provision::WifiList& nets) {
+  uint8_t blob[provision::kBlobMax];
+  const size_t n = provision::encode(nets, blob, sizeof blob);
+  Preferences prefs;
+  if (n == 0 || !prefs.begin(kPrefsNamespace, false)) return false;
+  const bool ok = prefs.putBytes(kPrefWifiList, blob, n) == n;
+  prefs.end();
+  memset(blob, 0, sizeof blob);
+  if (ok) g_rtc.wifi_configured = nets.count > 0;
+  return ok;
+}
+
+// Saved networks, in try order. A network saved by older firmware (one
+// ssid/pass pair) is moved into the list the first time.
+void load_networks(provision::WifiList& nets) {
+  nets = {};
+  uint8_t blob[provision::kBlobMax];
+  size_t n = 0;
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, true)) return;  // nothing saved yet
+  const bool has_list = prefs.isKey(kPrefWifiList);
+  if (has_list) n = prefs.getBytes(kPrefWifiList, blob, sizeof blob);
+  const bool has_old = prefs.isKey(kPrefWifiSsid);
+  prefs.end();
+  if (has_list) {
+    provision::decode(blob, n, nets);  // a broken blob reads as no networks
+    memset(blob, 0, sizeof blob);
+    return;
+  }
+  if (!has_old) return;
+  char ssid[kSsidLen], pass[kPassLen];
   load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
-  g_rtc.wifi_configured = ssid[0] != '\0';
+  load_pref_string(kPrefWifiPass, pass, sizeof pass);
+  provision::remember(nets, ssid, pass);  // skipped if invalid; no password = open, as before
+  memset(pass, 0, sizeof pass);
+  if (save_networks(nets) && prefs.begin(kPrefsNamespace, false)) {
+    prefs.remove(kPrefWifiSsid);
+    prefs.remove(kPrefWifiPass);
+    prefs.end();
+  }
+}
+
+void load_ntp_config() {
+  provision::WifiList nets;
+  load_networks(nets);
+  g_rtc.wifi_configured = nets.count > 0;
+  memset(&nets, 0, sizeof nets);
   uint16_t h = kDefaultNtpHours;
   Preferences prefs;
   if (prefs.begin(kPrefsNamespace, true)) {
@@ -361,12 +411,17 @@ bool apply_ntp_offset(int64_t offset_us) {
 
 // One NTP try now, recorded in the schedule and the counters. Returns the log letter.
 char run_ntp_sync() {
-  char ssid[kSsidLen], pass[kPassLen], server[kHostLen];
-  load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
-  load_pref_string(kPrefWifiPass, pass, sizeof pass);
+  static provision::WifiList nets;  // static: kept off the stack
+  char server[kHostLen];
+  load_networks(nets);
   load_pref_string(kPrefNtpServer, server, sizeof server);
   if (server[0] == '\0') snprintf(server, sizeof server, "%s", kDefaultNtpServer);
-  const ntp_sync::Result r = ntp_sync::run(ssid, pass, server);
+  const ntp_sync::Result r = ntp_sync::run(nets, server);
+  // The network that connected is tried first next time (#33).
+  if (r.network > 0 && provision::promote(nets, static_cast<size_t>(r.network))) {
+    save_networks(nets);
+  }
+  memset(&nets, 0, sizeof nets);
   bool ok = r.status == ntp_sync::Status::Ok;
   if (ok) {
     ok = apply_ntp_offset(r.offset_us);
@@ -529,8 +584,8 @@ void show_setup(portal::Screen screen, const char* ap, const char* ssid) {
   g_lcd.refresh_full(g_fb);
 }
 
-void setup_load(char* ssid, size_t ssid_n, char* tz, size_t tz_n, bool& tz_saved) {
-  load_pref_string(kPrefWifiSsid, ssid, ssid_n);
+void setup_load(provision::WifiList& nets, char* tz, size_t tz_n, bool& tz_saved) {
+  load_networks(nets);
   snprintf(tz, tz_n, "%s", g_rtc.tz);
   tz_saved = false;
   Preferences prefs;
@@ -548,18 +603,10 @@ void setup_offer_time(time_t utc) {
   if (!g_rtc.time_set && utc >= kMinValidTime) set_clock(utc);
 }
 
-bool setup_save_wifi(const char* ssid, const char* pass) {
-  if (!save_pref_string(kPrefWifiSsid, ssid) || !save_pref_string(kPrefWifiPass, pass)) {
-    return false;
-  }
-  g_rtc.wifi_configured = true;
-  return true;
-}
-
 bool setup_cancel() { return digitalRead(kKeyPin) == LOW; }
 
-const portal::Hooks kSetupHooks = {show_setup,       setup_load,      setup_apply_tz,
-                                   setup_offer_time, setup_save_wifi, setup_cancel};
+const portal::Hooks kSetupHooks = {show_setup,       setup_load,    setup_apply_tz,
+                                   setup_offer_time, save_networks, setup_cancel};
 
 // True if KEY stays down until `until_ms` after boot.
 bool key_held_until(uint32_t until_ms) {
@@ -598,10 +645,12 @@ void print_help() {
       "  tz [POSIX-TZ]          show or set the timezone, e.g. tz CET-1CEST,M3.5.0,M10.5.0/3\r\n"
       "  rtc                    RTC time and wake counters\r\n"
       "  setup                  Wi-Fi setup page (same as holding KEY 5 s)\r\n"
-      "  wifi                   show the Wi-Fi network used for NTP\r\n"
-      "  wifi ssid NAME         set the network name (spaces allowed)\r\n"
-      "  wifi pass PASSWORD     set the password (empty for an open network); syncs right after\r\n"
-      "  wifi forget            delete the network and password\r\n"
+      "  wifi                   saved Wi-Fi networks (up to 5), in the order they are tried\r\n"
+      "  wifi ssid NAME         start adding a network (spaces allowed), then:\r\n"
+      "  wifi pass PASSWORD     its password (empty for an open network); saves it first, syncs\r\n"
+      "  wifi first N           try network N first\r\n"
+      "  wifi forget N          delete network N\r\n"
+      "  wifi forget all        delete all networks\r\n"
       "  ntp                    NTP status: server, interval, last sync\r\n"
       "  ntp server HOST        set the NTP server (default pool.ntp.org)\r\n"
       "  ntp every H            sync every H hours, 1 to 168 (default 24)\r\n"
@@ -779,12 +828,20 @@ void handle_tz(const String& arg) {
 }
 
 void print_ntp() {
-  char server[kHostLen], ssid[kSsidLen];
+  char server[kHostLen];
   load_pref_string(kPrefNtpServer, server, sizeof server);
-  load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
-  Serial.printf("ntp server %s, every %u h, Wi-Fi %s\r\n", server[0] ? server : kDefaultNtpServer,
-                g_rtc.ntp_hours,
-                ssid[0] ? ssid : "(none: set it with `wifi ssid` and `wifi pass`)");
+  static provision::WifiList nets;
+  load_networks(nets);
+  Serial.printf("ntp server %s, every %u h, Wi-Fi ", server[0] ? server : kDefaultNtpServer,
+                g_rtc.ntp_hours);
+  if (nets.count == 0) {
+    Serial.print("(none: `setup`, or `wifi ssid` and `wifi pass`)\r\n");
+  } else {
+    Serial.printf("%s", nets.nets[0].ssid);
+    if (nets.count > 1) Serial.printf(" first, %u more saved", nets.count - 1);
+    Serial.print("\r\n");
+  }
+  memset(&nets, 0, sizeof nets);
   Serial.printf("syncs since power-on: %lu ok, %lu failed",
                 static_cast<unsigned long>(g_rtc.ntp_ok),
                 static_cast<unsigned long>(g_rtc.ntp_failed));
@@ -822,59 +879,91 @@ void print_ntp() {
 // Forget the failures and the last sync, so the next check syncs at once.
 void ntp_sync_soon() { g_rtc.ntp_schedule = {}; }
 
+void print_networks(const provision::WifiList& nets) {
+  if (nets.count == 0) {
+    Serial.print("no Wi-Fi networks saved; NTP is off\r\n");
+    return;
+  }
+  Serial.printf("Wi-Fi networks, tried in this order (%u of %u):\r\n", nets.count,
+                static_cast<unsigned>(provision::kMaxNetworks));
+  for (size_t i = 0; i < nets.count; ++i) {
+    Serial.printf("  %u. %s%s\r\n", static_cast<unsigned>(i + 1), nets.nets[i].ssid,
+                  nets.nets[i].pass[0] ? "" : " (open)");
+  }
+}
+
+// Network number N (1-based) from the end of `line` after `prefix`, as an
+// index; -1 if it is not a number in the list.
+int network_arg(const String& line, size_t prefix, const provision::WifiList& nets) {
+  const String arg = line.substring(prefix);
+  const long n = arg.toInt();
+  if (n < 1 || n > nets.count || String(n) != arg) return -1;
+  return static_cast<int>(n - 1);
+}
+
+// Name typed by `wifi ssid`, waiting for `wifi pass`. RAM only.
+char g_pending_ssid[kSsidLen];
+
 void handle_wifi(const String& line) {
+  static provision::WifiList nets;  // static: kept off the stack
+  load_networks(nets);
   if (line.startsWith("wifi ssid ")) {
     String name = line.substring(10);
     name.trim();
-    if (name.isEmpty() || name.length() >= kSsidLen) {
+    if (!provision::ssid_valid(name.c_str())) {
       Serial.print("network name: 1 to 32 characters\r\n");
       return;
     }
-    if (!save_pref_string(kPrefWifiSsid, name.c_str())) {
-      Serial.print("could not save the network name\r\n");
-      return;
-    }
-    // A new network needs its password first: no sync until `wifi pass`.
-    Preferences prefs;
-    if (prefs.begin(kPrefsNamespace, false)) {
-      prefs.remove(kPrefWifiPass);
-      prefs.end();
-    }
-    g_rtc.wifi_configured = false;
-    Serial.printf("network %s; now `wifi pass PASSWORD`\r\n", name.c_str());
+    snprintf(g_pending_ssid, sizeof g_pending_ssid, "%s", name.c_str());
+    Serial.printf("network %s; now `wifi pass PASSWORD` (or just `wifi pass` if open)\r\n",
+                  g_pending_ssid);
   } else if (line == "wifi pass" || line.startsWith("wifi pass ")) {
-    char ssid[kSsidLen];
-    load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
-    if (ssid[0] == '\0') {
-      Serial.print("set the network first: `wifi ssid NAME`\r\n");
+    if (g_pending_ssid[0] == '\0') {
+      Serial.print("name the network first: `wifi ssid NAME`\r\n");
       return;
     }
     const String pw = line.length() > 10 ? line.substring(10) : String();
-    if (!pw.isEmpty() && (pw.length() < 8 || pw.length() >= kPassLen)) {
+    if (!provision::pass_valid(pw.c_str())) {
       Serial.print("password: 8 to 63 characters, or nothing for an open network\r\n");
       return;
     }
-    if (!save_pref_string(kPrefWifiPass, pw.c_str())) {
-      Serial.print("could not save the password\r\n");
-      return;
+    char dropped[kSsidLen];
+    provision::remember(nets, g_pending_ssid, pw.c_str(), dropped);
+    if (!save_networks(nets)) {
+      Serial.print("could not save the network\r\n");
+    } else {
+      g_pending_ssid[0] = '\0';
+      if (dropped[0]) Serial.printf("list full: forgot %s\r\n", dropped);
+      print_networks(nets);
+      Serial.print("syncing...\r\n");
+      ntp_sync_soon();  // loop() runs it
     }
-    g_rtc.wifi_configured = true;
-    Serial.print("password saved; syncing...\r\n");
-    ntp_sync_soon();  // loop() runs it
-  } else if (line == "wifi forget") {
-    Preferences prefs;
-    if (prefs.begin(kPrefsNamespace, false)) {
-      prefs.remove(kPrefWifiSsid);
-      prefs.remove(kPrefWifiPass);
-      prefs.end();
+  } else if (line == "wifi forget" || line == "wifi forget all") {
+    nets = {};
+    Serial.print(save_networks(nets) ? "all Wi-Fi networks forgotten; NTP is off\r\n"
+                                     : "could not save the change\r\n");
+  } else if (line.startsWith("wifi forget ") || line.startsWith("wifi first ")) {
+    const bool forget = line.startsWith("wifi forget ");
+    const int i = network_arg(line, forget ? 12 : 11, nets);
+    if (i < 0) {
+      Serial.print("give a network number from `wifi`\r\n");
+    } else {
+      if (forget) {
+        provision::remove(nets, static_cast<size_t>(i));
+      } else {
+        provision::promote(nets, static_cast<size_t>(i));
+      }
+      if (save_networks(nets)) {
+        print_networks(nets);
+      } else {
+        Serial.print("could not save the change\r\n");
+      }
     }
-    g_rtc.wifi_configured = false;
-    Serial.print("Wi-Fi network forgotten; NTP is off\r\n");
   } else {
-    char ssid[kSsidLen];
-    load_pref_string(kPrefWifiSsid, ssid, sizeof ssid);
-    Serial.printf("Wi-Fi network: %s\r\n", ssid[0] ? ssid : "(none)");
+    print_networks(nets);
+    if (g_pending_ssid[0]) Serial.printf("adding %s: waiting for `wifi pass`\r\n", g_pending_ssid);
   }
+  memset(&nets, 0, sizeof nets);
 }
 
 void handle_ntp(const String& line) {
