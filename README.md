@@ -3,7 +3,9 @@
 Open source alarm clock: Waveshare ESP32-S3-RLCD-4.2, touch pads in a 3D-printed case.
 Runs on a battery for weeks, plugged in only to charge. Alarms work with Wi-Fi down.
 
-> Status: pre-alpha, milestone M0 (hardware spike). Hobby project, no dates: see docs/roadmap.md.
+> Status: alpha. Works as a battery clock with alarms: time from the on-board RTC, NTP over Wi-Fi
+> with timezones, room temperature, up to 16 alarms with snooze, Wi-Fi setup from a phone.
+> Next: custom sounds and sunrise light (M4). Hobby project, no dates: see docs/roadmap.md.
 
 ## Features (v1.0)
 
@@ -21,6 +23,22 @@ Decisions: [docs/adr/](docs/adr/).
 | Copper tape | touch pads ([ADR-0015](docs/adr/0015-input.md)) |
 
 Full list: [hardware/BOM.csv](hardware/BOM.csv).
+
+## Install
+
+Download the files of the latest [release](https://github.com/braveadmin/inkwake/releases), connect
+the board by USB and open https://adafruit.github.io/Adafruit_WebSerial_ESPTool/ in Chrome or Edge.
+
+| Address | File | When |
+| --- | --- | --- |
+| 0x0 | `inkwake-vX.Y.Z-bootloader.bin` | first install (after Erase) |
+| 0x8000 | `inkwake-vX.Y.Z-partitions.bin` | first install (after Erase) |
+| 0x10000 | `inkwake-vX.Y.Z.bin` | first install and every update |
+
+First install: Erase, then all three files. Update: only the firmware at 0x10000, without Erase
+(Erase wipes the saved Wi-Fi networks, timezone and alarms). On first start the clock opens its
+Wi-Fi setup: scan the QR code on the screen with a phone. Serial console (115200 baud):
+https://googlechromelabs.github.io/serial-terminal/, type `help`.
 
 ## Build
 
