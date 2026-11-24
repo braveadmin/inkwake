@@ -404,6 +404,55 @@ static void test_setup_screen() {
   }
 }
 
+static FaceState with_alarm(uint8_t kind, uint8_t h, uint8_t m, uint8_t wd = FaceState::kSoon) {
+  FaceState s{7, 5, 2, 18, 11, 215};
+  s.alarm = kind;
+  s.alarm_hour = h;
+  s.alarm_minute = m;
+  s.alarm_weekday = wd;
+  return s;
+}
+
+static void test_alarm_field() {
+  char buf[16];
+  format_alarm(FaceState{}, buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("", buf);
+  format_alarm(with_alarm(FaceState::kAlarmNext, 7, 0), buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("07:00", buf);
+  format_alarm(with_alarm(FaceState::kAlarmNext, 9, 30, 5), buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("Sat 09:30", buf);
+
+  // Bell + widest text stays on the screen's right half, clear of the temperature.
+  const FaceState wide = with_alarm(FaceState::kAlarmNext, 23, 58, 2);
+  render_face(g_fb, wide);
+  for (int y = 0; y < Framebuffer::kHeight; ++y) {
+    TEST_ASSERT_FALSE(g_fb.get(Framebuffer::kWidth - 1, y));
+  }
+  Rect out[kFaceRegions];
+  const FaceState none{7, 5, 2, 18, 11, 215};
+  TEST_ASSERT_EQUAL_UINT32(1, face_dirty(none, wide, out));
+  TEST_ASSERT_EQUAL_INT(face_region(FaceRegion::Temp).y, out[0].y);
+  TEST_ASSERT_EQUAL_UINT32(0, face_dirty(wide, wide, out));
+
+  check_diff_covered(none, wide);
+  check_diff_covered(wide, with_alarm(FaceState::kAlarmSnoozed, 7, 9));
+  check_diff_covered(with_alarm(FaceState::kAlarmNext, 7, 0),
+                     with_alarm(FaceState::kAlarmNext, 6, 45));
+  FaceState unset = wide;
+  unset.time_set = false;
+  check_diff_covered(wide, unset);
+}
+
+static void test_ringing_screen() {
+  TEST_ASSERT_TRUE(text_width(fonts::kText30, kRingHint) <= Framebuffer::kWidth - 8);
+  render_ringing(g_fb, 7, 0, "Work");
+  int ink = 0;
+  for (int y = 0; y < Framebuffer::kHeight; ++y) {
+    for (int x = 0; x < Framebuffer::kWidth; ++x) ink += g_fb.get(x, y);
+  }
+  TEST_ASSERT_TRUE(ink > 1000);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_packing_matches_spike_formula);
@@ -425,5 +474,7 @@ int main(int, char**) {
   RUN_TEST(test_wifi_mark);
   RUN_TEST(test_battery_mark);
   RUN_TEST(test_setup_screen);
+  RUN_TEST(test_alarm_field);
+  RUN_TEST(test_ringing_screen);
   return UNITY_END();
 }

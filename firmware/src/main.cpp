@@ -41,6 +41,14 @@
 // Saved networks (#33): up to 5, in NVS as one list in try order. A sync tries
 // the first, and if it fails, the others a scan finds in range; the one that
 // connects moves to the top. The setup page can remove networks or move them up.
+//
+// Alarms (#2, ADR-0017): up to 16, kept in NVS and copied into RTC memory.
+// Every wake checks which alarm came due since the last check (lib/alarm_sched,
+// UTC time line, DST policy there). A due alarm keeps the board awake and
+// beeps through the ES8311 speaker, louder over time: KEY tap = snooze 9 min,
+// KEY held 2 s = stop; 10 min unattended = auto-snooze, gives up after the
+// third snooze. A snooze sleeps with a timer that ends it on time. The next
+// alarm (or the snooze end) shows on the bottom line of the face.
 #include <Arduino.h>
 #include <Preferences.h>
 #include <driver/gpio.h>
@@ -53,7 +61,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <string>
+#include <vector>
 
+#include "alarm.h"
+#include "alarm_sched.h"
+#include "audio.h"
 #include "battery.h"
 #include "clock_face.h"
 #include "framebuffer.h"
@@ -77,7 +90,7 @@ namespace {
 constexpr int kKeyPin = 18;                   // active low, external pull-up; wakes from deep sleep
 constexpr int kAmpPin = 46;                   // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;                    // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E001F;       // changed with the RtcState layout
+constexpr uint32_t kMagic = 0x1A7E0020;       // changed with the RtcState layout
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -100,6 +113,7 @@ struct WakeEntry {
   char ntp_result;    // 0 = no sync on this wake, else ntp_sync::status_letter()
   uint16_t awake_ms;  // from boot to the display update done
   uint16_t bat_mv;
+  char alarm;  // A = an alarm started ringing, S = a snooze ended, 0 = none
 };
 constexpr size_t kLogLen = 32;
 constexpr uint8_t kFullRefresh = 0xFF;
@@ -131,6 +145,12 @@ constexpr uint16_t kMaxNtpHours = 168;
 constexpr size_t kSsidLen = 33;  // 32 + NUL
 constexpr size_t kPassLen = 64;  // WPA2 passphrase up to 63 + NUL
 constexpr size_t kHostLen = 64;
+constexpr char kPrefAlarms[] = "alarms";  // sched::encode blob
+constexpr size_t kAlarmBlobMax = 4 + sched::kMaxAlarms * (8 + sched::kMaxLabel + sched::kMaxSound);
+constexpr uint32_t kDismissHoldMs = 2'000;  // KEY held this long stops a ringing or snoozed alarm
+constexpr uint8_t kRingStartPct = 50;       // beep loudness ramp, audio::beep scale (dB-like)
+constexpr uint8_t kRingMaxPct = 90;
+constexpr uint8_t kTestAlarmId = 0;  // `alarm test`
 
 struct RtcState {
   uint32_t magic;
@@ -167,6 +187,11 @@ struct RtcState {
   // Battery (#36), read on every wake.
   uint16_t bat_mv;    // last averaged reading
   uint8_t bat_level;  // battery::Level, with hysteresis
+  // Alarms (#2): copy of the NVS blob, decoded into g_alarms on every boot.
+  uint16_t alarm_blob_len;
+  uint8_t alarm_blob[kAlarmBlobMax];
+  int64_t alarm_checked;  // UTC up to which due alarms were handled; 0 = not yet
+  Ringer ring;            // plain data, all-zero = idle
 };
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
@@ -175,7 +200,8 @@ RTC_DATA_ATTR RtcState g_rtc = {};
 
 Framebuffer g_fb;
 St7305 g_lcd;
-tz::Zone g_zone;  // parsed from g_rtc.tz on every boot and wake
+tz::Zone g_zone;              // parsed from g_rtc.tz on every boot and wake
+std::vector<Alarm> g_alarms;  // decoded from g_rtc.alarm_blob on every boot and wake
 
 FaceState current_face() {
   const tz::Civil t = tz::to_civil(g_zone, time(nullptr));
@@ -194,6 +220,23 @@ FaceState current_face() {
   s.wifi_failed = g_rtc.wifi_configured && g_rtc.ntp_status != 0 && ntp != ntp_sync::Status::Ok &&
                   ntp != ntp_sync::Status::NoWifiConfig;
   s.battery = g_rtc.bat_level;
+  if (g_rtc.time_set) {
+    const int64_t now = time(nullptr);
+    int64_t at = 0;
+    if (g_rtc.ring.state == RingState::Snoozed) {
+      at = g_rtc.ring.resume_at;
+      s.alarm = FaceState::kAlarmSnoozed;
+    } else if (const auto u = sched::upcoming(g_alarms, g_zone, now)) {
+      at = u->fire_utc;
+      s.alarm = FaceState::kAlarmNext;
+    }
+    if (s.alarm != FaceState::kAlarmNone) {
+      const tz::Civil c = tz::to_civil(g_zone, at);
+      s.alarm_hour = c.hour;
+      s.alarm_minute = c.minute;
+      s.alarm_weekday = at - now > 86400 ? c.weekday : FaceState::kSoon;
+    }
+  }
   return s;
 }
 
@@ -296,6 +339,7 @@ time_t make_time(int year, int mon, int day, int hour, int min, int sec) {
 void set_clock(time_t now) {
   set_system_clock(now);
   g_rtc.time_set = true;
+  g_rtc.alarm_checked = 0;  // a jump in time rings nothing it skipped over
   // Fails if the RTC is missing, or within ~2 s of power-up while its crystal starts.
   if (!rtc::write(now)) Serial.print("RTC write failed: try `set` again\r\n");
 }
@@ -487,7 +531,8 @@ void measure_battery() {
       battery::classify(static_cast<battery::Level>(g_rtc.bat_level), g_rtc.bat_mv));
 }
 
-void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_letter) {
+void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_letter,
+              char alarm = 0) {
   WakeEntry& e = g_rtc.log[g_rtc.log_count++ % kLogLen];
   e.when = static_cast<uint32_t>(time(nullptr));
   e.cause = cause;
@@ -496,6 +541,7 @@ void log_wake(char cause, rtc::Status rtc_status, uint8_t regions, char ntp_lett
   e.ntp_result = ntp_letter;
   e.awake_ms = static_cast<uint16_t>(millis());
   e.bat_mv = g_rtc.bat_mv;
+  e.alarm = alarm;
 }
 
 // Light sleep for the panel's datasheet waits on battery minute wakes, instead
@@ -529,10 +575,17 @@ bool int_needs_pullup() {
 
   timeval tv;
   gettimeofday(&tv, nullptr);
-  const uint64_t us = armed && !g_rtc.time_set
-                          ? kUnsetFallbackUs
-                          : static_cast<uint64_t>(59 - tv.tv_sec % 60) * 1'000'000 +
-                                (1'000'000 - tv.tv_usec) + (armed ? kFallbackUs : kWakeMarginUs);
+  uint64_t us = armed && !g_rtc.time_set
+                    ? kUnsetFallbackUs
+                    : static_cast<uint64_t>(59 - tv.tv_sec % 60) * 1'000'000 +
+                          (1'000'000 - tv.tv_usec) + (armed ? kFallbackUs : kWakeMarginUs);
+  // A snooze ends between minute wakes: wake for it on time.
+  if (g_rtc.ring.state == RingState::Snoozed) {
+    const int64_t left_s = g_rtc.ring.resume_at - tv.tv_sec;
+    const uint64_t snooze_us =
+        left_s <= 0 ? 1'000 : static_cast<uint64_t>(left_s) * 1'000'000 - tv.tv_usec;
+    if (snooze_us < us) us = snooze_us;
+  }
 
   pinMode(kAmpPin, OUTPUT);
   digitalWrite(kAmpPin, LOW);
@@ -552,6 +605,142 @@ bool int_needs_pullup() {
   }
   esp_sleep_enable_ext1_wakeup_io(mask, ESP_EXT1_WAKEUP_ANY_LOW);
   esp_deep_sleep_start();
+}
+
+// ---- Alarms (#2) ----
+
+void use_alarms(const std::vector<Alarm>& v) {
+  const std::vector<uint8_t> b = sched::encode(v);
+  memcpy(g_rtc.alarm_blob, b.data(), b.size());  // <= kAlarmBlobMax: sched::check limits
+  g_rtc.alarm_blob_len = static_cast<uint16_t>(b.size());
+  g_alarms = v;
+}
+
+// RTC copy -> g_alarms; empty if the copy is damaged.
+void alarms_from_rtc() {
+  std::vector<Alarm> v;
+  if (g_rtc.alarm_blob_len > kAlarmBlobMax ||
+      !sched::decode(g_rtc.alarm_blob, g_rtc.alarm_blob_len, v)) {
+    v.clear();
+  }
+  g_alarms = v;
+}
+
+void load_alarms() {
+  static uint8_t buf[kAlarmBlobMax];
+  size_t n = 0;
+  Preferences prefs;
+  if (prefs.begin(kPrefsNamespace, true)) {
+    if (prefs.isKey(kPrefAlarms)) n = prefs.getBytes(kPrefAlarms, buf, sizeof buf);
+    prefs.end();
+  }
+  std::vector<Alarm> v;
+  if (n == 0 || !sched::decode(buf, n, v)) v.clear();
+  use_alarms(v);
+}
+
+bool save_alarms(const std::vector<Alarm>& v) {
+  use_alarms(v);
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, false)) return false;
+  const bool ok =
+      prefs.putBytes(kPrefAlarms, g_rtc.alarm_blob, g_rtc.alarm_blob_len) == g_rtc.alarm_blob_len;
+  prefs.end();
+  return ok;
+}
+
+// Starts an alarm that came due since the last check, or rings again after a
+// snooze. Returns the log letter (A, S) or 0.
+char check_alarms() {
+  const int64_t now = time(nullptr);
+  char letter = 0;
+  if (!g_rtc.time_set) {
+    g_rtc.alarm_checked = 0;  // the system clock is a guess: nothing to ring
+    return 0;
+  }
+  const int64_t prev = g_rtc.alarm_checked;
+  if (prev == 0 || now > prev) g_rtc.alarm_checked = now;
+  if (prev != 0 && now > prev) {
+    if (const auto d = sched::due(g_alarms, g_zone, prev, now)) {
+      Alarm& a = g_alarms[d->index];
+      ring_trigger(g_rtc.ring, a.id, now);
+      letter = 'A';
+      if (a.days == kOneShot) {  // rings once, then turns itself off
+        std::vector<Alarm> v = g_alarms;
+        v[d->index].enabled = false;
+        save_alarms(v);
+      }
+    }
+  }
+  if (ring_tick(g_rtc.ring, kDefaultRing, now) == RingEvent::Restart) letter = 'S';
+  return letter;
+}
+
+void ring_title(char* buf, size_t n) {
+  const uint8_t id = g_rtc.ring.alarm_id;
+  const auto i = sched::find(g_alarms, id);
+  if (id == kTestAlarmId) {
+    snprintf(buf, n, "Test alarm");
+  } else if (i && !g_alarms[*i].label.empty()) {
+    snprintf(buf, n, "%s", g_alarms[*i].label.c_str());
+  } else {
+    snprintf(buf, n, "Alarm");
+  }
+}
+
+uint8_t show_ringing() {
+  char title[sched::kMaxLabel + 1];
+  ring_title(title, sizeof title);
+  const tz::Civil c = tz::to_civil(g_zone, time(nullptr));
+  render_ringing(g_fb, c.hour, c.minute, title);
+  g_lcd.refresh_full(g_fb);
+  return c.minute;
+}
+
+// Beeps until the alarm is snoozed, stopped or gives up, then redraws the face.
+// A KEY press already down when ringing starts counts only after its release.
+void ring_loop() {
+  const bool sound = audio::begin();
+  if (HWCDC::isPlugged()) {
+    Serial.printf("alarm ringing%s: tap KEY to snooze, hold 2 s to stop\r\n",
+                  sound ? "" : " (no sound: speaker codec did not answer)");
+  }
+  uint8_t shown_min = show_ringing();
+  uint32_t pos_ms = 0;
+  bool was_down = digitalRead(kKeyPin) == LOW;
+  uint32_t down_ms = 0;  // 0 = no press counted
+  while (g_rtc.ring.state == RingState::Ringing) {
+    const int64_t now = time(nullptr);
+    const auto elapsed = static_cast<uint32_t>(now - g_rtc.ring.since);
+    audio::beep(100, ring_volume(elapsed, kRingStartPct, kRingMaxPct), pos_ms);
+    const bool down = digitalRead(kKeyPin) == LOW;
+    if (down && !was_down) down_ms = millis() | 1;
+    if (down && down_ms != 0 && millis() - down_ms >= kDismissHoldMs) {
+      ring_dismiss(g_rtc.ring);
+    } else if (!down && was_down && down_ms != 0) {
+      ring_snooze(g_rtc.ring, kDefaultRing, now);  // ignored past the last snooze
+      down_ms = 0;
+    }
+    was_down = down;
+    ring_tick(g_rtc.ring, kDefaultRing, now);
+    const tz::Civil c = tz::to_civil(g_zone, time(nullptr));
+    if (g_rtc.ring.state == RingState::Ringing && c.minute != shown_min) shown_min = show_ringing();
+  }
+  audio::end();
+  // A stopping hold is not also the start of a 5 s setup hold.
+  while (digitalRead(kKeyPin) == LOW) delay(10);
+  if (HWCDC::isPlugged()) {
+    Serial.print(g_rtc.ring.state == RingState::Snoozed ? "alarm snoozed\r\n"
+                                                        : "alarm stopped\r\n");
+  }
+  update_display(true);
+}
+
+// Checks alarms and rings if one is due. Returns the log letter.
+char handle_alarms() {
+  const char letter = check_alarms();
+  if (g_rtc.ring.state == RingState::Ringing) ring_loop();
+  return letter;
 }
 
 // ---- Wi-Fi setup (#20) ----
@@ -603,10 +792,82 @@ void setup_offer_time(time_t utc) {
   if (!g_rtc.time_set && utc >= kMinValidTime) set_clock(utc);
 }
 
-bool setup_cancel() { return digitalRead(kKeyPin) == LOW; }
+// KEY, or an alarm coming due: setup closes and run_setup() rings it.
+bool setup_cancel() {
+  check_alarms();
+  return digitalRead(kKeyPin) == LOW || g_rtc.ring.state == RingState::Ringing;
+}
 
-const portal::Hooks kSetupHooks = {show_setup,       setup_load,    setup_apply_tz,
-                                   setup_offer_time, save_networks, setup_cancel};
+void setup_alarms_json(char* buf, size_t n) {
+  static const char* const kDay[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+  const int64_t now = time(nullptr);
+  std::string out = "[";
+  for (const Alarm& a : g_alarms) {
+    char label[sched::kMaxLabel * 6 + 1], next[16] = "", item[sizeof label + 160];
+    provision::json_escape(a.label.c_str(), label, sizeof label);
+    if (const auto f = g_rtc.time_set ? sched::next_fire(a, g_zone, now) : std::nullopt) {
+      const tz::Civil t = tz::to_civil(g_zone, *f);
+      snprintf(next, sizeof next, "%s %02u:%02u", kDay[t.weekday % 7], t.hour, t.minute);
+    }
+    snprintf(item, sizeof item,
+             "%s{\"id\":%u,\"time\":\"%02u:%02u\",\"days\":\"%s\",\"mask\":%u,\"on\":%s,"
+             "\"label\":\"%s\",\"next\":\"%s\"}",
+             out.size() > 1 ? "," : "", a.id, a.hour, a.minute, sched::format_days(a.days).c_str(),
+             a.days, a.enabled ? "true" : "false", label, next);
+    if (out.size() + strlen(item) + 2 > n) break;  // cannot happen with 16 alarms in 4 KB
+    out += item;
+  }
+  out += "]";
+  snprintf(buf, n, "%s", out.c_str());
+}
+
+// POST /api/alarms: op=add|save|del, id, time=HH:MM, days (parse_days form), label, on=1|0.
+const char* setup_alarm_edit(const char* form) {
+  char op[8] = "", id_s[8] = "", time_s[8] = "", days_s[48] = "", on_s[4] = "1";
+  char label[sched::kMaxLabel + 1] = "";
+  provision::form_value(form, "op", op, sizeof op);
+  provision::form_value(form, "id", id_s, sizeof id_s);
+  std::vector<Alarm> v = g_alarms;
+  Alarm* a = nullptr;
+  if (strcmp(op, "add") == 0) {
+    if (v.size() >= sched::kMaxAlarms) return "16 alarms already: delete one first";
+    v.emplace_back();
+    a = &v.back();
+    a->id = sched::free_id(g_alarms);
+  } else {
+    const long id = strtol(id_s, nullptr, 10);
+    const auto i = id > 0 && id < 256 ? sched::find(v, static_cast<uint8_t>(id)) : std::nullopt;
+    if (!i) return "alarm not found";
+    if (strcmp(op, "del") == 0) {
+      v.erase(v.begin() + static_cast<long>(*i));
+    } else if (strcmp(op, "save") == 0) {
+      a = &v[*i];
+    } else {
+      return "unknown operation";
+    }
+  }
+  if (a != nullptr) {
+    if (!provision::form_value(form, "time", time_s, sizeof time_s) ||
+        !sched::parse_time(time_s, a->hour, a->minute)) {
+      return "time as HH:MM";
+    }
+    if (!provision::form_value(form, "days", days_s, sizeof days_s) ||
+        !sched::parse_days(days_s, a->days)) {
+      return "bad days";
+    }
+    if (!provision::form_value(form, "label", label, sizeof label)) return "label too long";
+    a->label = label;
+    provision::form_value(form, "on", on_s, sizeof on_s);
+    a->enabled = strcmp(on_s, "0") != 0;
+    if (const char* why = sched::check(*a)) return why;
+  }
+  if (!save_alarms(v)) return "saved until power-off only (NVS write failed)";
+  return nullptr;
+}
+
+const portal::Hooks kSetupHooks = {show_setup,        setup_load,      setup_apply_tz,
+                                   setup_offer_time,  save_networks,   setup_cancel,
+                                   setup_alarms_json, setup_alarm_edit};
 
 // True if KEY stays down until `until_ms` after boot.
 bool key_held_until(uint32_t until_ms) {
@@ -635,15 +896,17 @@ char run_setup(bool verbose) {
   }
   while (digitalRead(kKeyPin) == LOW) delay(10);  // a press that cancelled is no new hold
   update_display(true);
+  if (g_rtc.ring.state == RingState::Ringing) ring_loop();
   return letter;
 }
 
 void print_help() {
   Serial.print(
-      "\r\ninkwake clock (M2)\r\n"
+      "\r\ninkwake clock (M3)\r\n"
       "  set YYYY-MM-DD HH:MM   set the clock, in local time (the RTC keeps UTC)\r\n"
       "  tz [POSIX-TZ]          show or set the timezone, e.g. tz CET-1CEST,M3.5.0,M10.5.0/3\r\n"
       "  rtc                    RTC time and wake counters\r\n"
+      "  alarm                  list alarms; `alarm help` for add, edit, test\r\n"
       "  setup                  Wi-Fi setup page (same as holding KEY 5 s)\r\n"
       "  wifi                   saved Wi-Fi networks (up to 5), in the order they are tried\r\n"
       "  wifi ssid NAME         start adding a network (spaces allowed), then:\r\n"
@@ -713,7 +976,8 @@ void print_log() {
   const uint32_t n = g_rtc.log_count < kLogLen ? g_rtc.log_count : kLogLen;
   Serial.printf(
       "last %lu of %lu wakes (R rtc, T timer, K key, P power-on), battery now %u mV\r\n"
-      "ntp column: + synced, W no Wi-Fi, D DNS, N no reply, B bad reply, X RTC write failed\r\n",
+      "ntp column: + synced, W no Wi-Fi, D DNS, N no reply, B bad reply, X RTC write failed\r\n"
+      "alarm column: A alarm rang, S snooze ended\r\n",
       static_cast<unsigned long>(n), static_cast<unsigned long>(g_rtc.log_count), battery_mv());
   for (uint32_t i = g_rtc.log_count - n; i < g_rtc.log_count; ++i) {
     const WakeEntry& e = g_rtc.log[i % kLogLen];
@@ -726,8 +990,8 @@ void print_log() {
     } else {
       snprintf(redraw, sizeof redraw, "%u regions", e.regions);
     }
-    Serial.printf("  %c  %-10s %5u ms  %4u mV  ntp %c%s%s\r\n", e.cause, redraw, e.awake_ms,
-                  e.bat_mv, e.ntp_result ? e.ntp_result : '-',
+    Serial.printf("  %c  %-10s %5u ms  %4u mV  ntp %c  alarm %c%s%s\r\n", e.cause, redraw,
+                  e.awake_ms, e.bat_mv, e.ntp_result ? e.ntp_result : '-', e.alarm ? e.alarm : '-',
                   e.rtc == static_cast<uint8_t>(rtc::Status::Ok) ? "" : "  rtc: ",
                   e.rtc == static_cast<uint8_t>(rtc::Status::Ok)
                       ? ""
@@ -997,6 +1261,147 @@ void handle_ntp(const String& line) {
   print_ntp();
 }
 
+void print_alarms() {
+  const int64_t now = time(nullptr);
+  if (g_alarms.empty()) Serial.print("no alarms; add one with `alarm add 07:00 weekdays Work`\r\n");
+  for (const Alarm& a : g_alarms) {
+    Serial.printf("  %u  %02u:%02u  %-14s %-3s  %s", a.id, a.hour, a.minute,
+                  sched::format_days(a.days).c_str(), a.enabled ? "on" : "off", a.label.c_str());
+    if (const auto f = g_rtc.time_set ? sched::next_fire(a, g_zone, now) : std::nullopt) {
+      print_stamp("   next", static_cast<time_t>(*f));
+    }
+    Serial.print("\r\n");
+  }
+  if (g_rtc.ring.state == RingState::Snoozed) {
+    print_stamp("snoozed until", static_cast<time_t>(g_rtc.ring.resume_at));
+    Serial.printf(" (snooze %u of %u; `alarm stop` ends it)\r\n", g_rtc.ring.snoozes,
+                  kDefaultRing.max_snoozes);
+  }
+  if (!g_rtc.time_set) Serial.print("time not set: alarms cannot ring until it is\r\n");
+}
+
+// Splits "a b c" into at most `max` words; the last one keeps the rest of the line.
+size_t split_words(const String& s, String* out, size_t max) {
+  size_t n = 0;
+  int pos = 0;
+  while (n < max && pos < static_cast<int>(s.length())) {
+    while (pos < static_cast<int>(s.length()) && s[pos] == ' ') ++pos;
+    if (pos >= static_cast<int>(s.length())) break;
+    const int sp = s.indexOf(' ', pos);
+    if (n == max - 1 || sp < 0) {
+      out[n++] = s.substring(pos);
+      break;
+    }
+    out[n++] = s.substring(pos, sp);
+    pos = sp + 1;
+  }
+  return n;
+}
+
+void print_alarm_usage() {
+  Serial.print(
+      "  alarm                      list alarms\r\n"
+      "  alarm add HH:MM [DAYS] [LABEL]   DAYS: daily, weekdays, weekends, once, mon,wed or "
+      "mon-fri\r\n"
+      "  alarm time ID HH:MM | alarm days ID DAYS | alarm label ID [TEXT]\r\n"
+      "  alarm on ID | alarm off ID | alarm del ID\r\n"
+      "  alarm test                 ring now (tap KEY = snooze, hold 2 s = stop)\r\n"
+      "  alarm stop                 end a snooze\r\n");
+}
+
+void handle_alarm(const String& line) {
+  String w[4];
+  const size_t n = split_words(line, w, 4);  // "alarm", verb, arg, rest
+  const String verb = n > 1 ? w[1] : String();
+  std::vector<Alarm> v = g_alarms;
+  if (verb.isEmpty()) {
+    print_alarms();
+    return;
+  }
+  if (verb == "test") {
+    ring_trigger(g_rtc.ring, kTestAlarmId, time(nullptr));
+    ring_loop();
+    return;
+  }
+  if (verb == "stop") {
+    ring_dismiss(g_rtc.ring);
+    Serial.print("no alarm snoozed\r\n");
+    update_display(false);
+    return;
+  }
+  if (verb == "add") {
+    if (v.size() >= sched::kMaxAlarms) {
+      Serial.print("16 alarms already: delete one first\r\n");
+      return;
+    }
+    String rest[3];
+    const size_t m = split_words(n > 3 ? w[2] + " " + w[3] : n > 2 ? w[2] : String(), rest, 3);
+    Alarm a;
+    a.id = sched::free_id(v);
+    a.days = kEveryDay;
+    if (m < 1 || !sched::parse_time(rest[0].c_str(), a.hour, a.minute)) {
+      print_alarm_usage();
+      return;
+    }
+    size_t label_at = 1;
+    if (m >= 2 && sched::parse_days(rest[1].c_str(), a.days)) label_at = 2;
+    if (m > label_at) {
+      a.label = rest[label_at].c_str();
+      if (label_at == 1 && m == 3) a.label += (" " + rest[2]).c_str();
+    }
+    if (const char* why = sched::check(a)) {
+      Serial.printf("%s\r\n", why);
+      return;
+    }
+    v.push_back(a);
+  } else {
+    const long id = n > 2 ? w[2].toInt() : 0;
+    const auto i = id > 0 && id < 256 ? sched::find(v, static_cast<uint8_t>(id)) : std::nullopt;
+    if (!i) {
+      if (verb == "on" || verb == "off" || verb == "del" || verb == "time" || verb == "days" ||
+          verb == "label") {
+        Serial.print("no alarm with that ID; `alarm` lists them\r\n");
+      } else {
+        print_alarm_usage();
+      }
+      return;
+    }
+    Alarm& a = v[*i];
+    const String arg = n > 3 ? w[3] : String();
+    if (verb == "on" || verb == "off") {
+      a.enabled = verb == "on";
+    } else if (verb == "del") {
+      v.erase(v.begin() + static_cast<long>(*i));
+    } else if (verb == "time") {
+      if (!sched::parse_time(arg.c_str(), a.hour, a.minute)) {
+        Serial.print("time as HH:MM, e.g. `alarm time 1 06:45`\r\n");
+        return;
+      }
+      a.enabled = true;
+    } else if (verb == "days") {
+      if (!sched::parse_days(arg.c_str(), a.days)) {
+        Serial.print("days: daily, weekdays, weekends, once, or e.g. mon,wed,fri or mon-fri\r\n");
+        return;
+      }
+      a.enabled = true;
+    } else if (verb == "label") {
+      a.label = arg.c_str();
+    } else {
+      print_alarm_usage();
+      return;
+    }
+    if (verb != "del") {
+      if (const char* why = sched::check(a)) {
+        Serial.printf("%s\r\n", why);
+        return;
+      }
+    }
+  }
+  if (!save_alarms(v)) Serial.print("could not save the alarms: they are lost at power-off\r\n");
+  print_alarms();
+  if (current_face() != g_rtc.shown) update_display(false);
+}
+
 void handle_line(const String& line) {
   int y, mo, d, h, mi;
   if (line.startsWith("set ") &&
@@ -1008,6 +1413,8 @@ void handle_line(const String& line) {
     update_display(true);
   } else if (line == "rtc") {
     print_rtc();
+  } else if (line == "alarm" || line == "alarms" || line.startsWith("alarm ")) {
+    handle_alarm(line == "alarms" ? String("alarm") : line);
   } else if (line == "tz" || line.startsWith("tz ")) {
     String arg = line.substring(2);
     arg.trim();
@@ -1111,6 +1518,7 @@ void setup() {
   rtc::Status rtc_status = rtc::Status::Ok;
   if (woke) {
     if (!use_tz(g_rtc.tz)) load_tz();  // RTC copy from older firmware: read NVS
+    alarms_from_rtc();
     g_rtc.wakes++;
     if (ext1 & (1ULL << rtc::kIntPin)) g_rtc.rtc_wakes++;
     if (cause == ESP_SLEEP_WAKEUP_TIMER) g_rtc.timer_wakes++;
@@ -1130,14 +1538,23 @@ void setup() {
       regions = update_display(false);
     }
     g_lcd.set_wait([](uint32_t ms) { delay(ms); });
-    // After the redraw, so the face is never late because of Wi-Fi.
-    const char ntp_letter = maybe_ntp_sync();
-    if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
+    // Logged before ringing, so the entry has this wake's time and awake_ms.
+    const char alarm_letter = check_alarms();
     log_wake(key                               ? 'K'
              : cause == ESP_SLEEP_WAKEUP_TIMER ? 'T'
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
                                                : '?',
-             rtc_status, regions, ntp_letter);
+             rtc_status, regions, 0, alarm_letter);
+    if (g_rtc.ring.state == RingState::Ringing) ring_loop();
+    // After the redraw (and any alarm), so neither waits for Wi-Fi.
+    const char ntp_letter = maybe_ntp_sync();
+    if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
+    g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = ntp_letter;
+    // KEY held 2 s while snoozed: stop the alarm. Holding on to 5 s opens setup.
+    if (key && g_rtc.ring.state == RingState::Snoozed && key_held_until(kDismissHoldMs)) {
+      ring_dismiss(g_rtc.ring);
+      update_display(false);
+    }
     if (key && key_held_until(kKeyHoldMs)) {
       const char letter = run_setup(false);
       if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
@@ -1164,6 +1581,7 @@ void setup() {
     g_rtc.temp_offset_dc = load_temp_offset();
     load_tz();
     load_ntp_config();
+    load_alarms();
     finish_temp(temp_started);
     measure_battery();
     rtc_status = sync_from_rtc();
@@ -1228,10 +1646,16 @@ void loop() {
       Serial.write(static_cast<uint8_t>(c));
     }
   }
-  // KEY held 5 s while awake: Wi-Fi setup.
+  if (handle_alarms() != 0) print_alarms();
+  // KEY held 2 s while snoozed stops the alarm; held 5 s opens Wi-Fi setup.
   static uint32_t key_down_ms = 0;
   if (digitalRead(kKeyPin) == LOW) {
     if (key_down_ms == 0) key_down_ms = millis() | 1;
+    if (g_rtc.ring.state == RingState::Snoozed && millis() - key_down_ms >= kDismissHoldMs) {
+      ring_dismiss(g_rtc.ring);
+      Serial.print("alarm stopped\r\n");
+      update_display(false);
+    }
     if (millis() - key_down_ms >= kKeyHoldMs) {
       run_setup(true);
       key_down_ms = 0;

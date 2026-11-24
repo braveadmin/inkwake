@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #include "font.h"
 #include "fonts/clock_digits.h"
@@ -30,6 +31,13 @@ constexpr int kBatY = 4;
 constexpr int kBatBodyW = 20;
 constexpr int kBatH = 11;
 constexpr int kBatW = kBatBodyW + 2 + 3 + 3;  // body, tip, gap, "!"
+
+// Bottom line with an alarm: temperature centred on the left half, alarm on the right.
+constexpr int kTempWithAlarmX = 110;
+constexpr int kAlarmX = 290;
+constexpr int kBellW = 18;
+constexpr int kBellH = 20;
+constexpr int kBellGap = 8;
 
 const char* const kWeekdays[] = {"Monday", "Tuesday",  "Wednesday", "Thursday",
                                  "Friday", "Saturday", "Sunday"};
@@ -120,6 +128,45 @@ void draw_wifi_mark(Framebuffer& fb) {
   fb.fill(Rect{bx, kMarkY + kMarkH - 2, 3, 2}, true);
 }
 
+// 18x20 bell: dome widening to a rim, then the clapper below.
+void draw_bell(Framebuffer& fb, int x, int baseline) {
+  const int top = baseline - kBellH + 1;
+  static constexpr uint8_t kHalf[] = {2, 4, 5, 6, 6, 6, 6, 6, 7, 7, 7, 8, 9, 9};  // dome rows
+  fb.fill(Rect{x + 8, top, 2, 1}, true);                                          // knob
+  for (int r = 0; r < 14; ++r) {
+    fb.fill(Rect{x + 9 - kHalf[r], top + 1 + r, 2 * kHalf[r], 1}, true);
+  }
+  fb.fill(Rect{x, top + 15, kBellW, 2}, true);  // rim
+  fb.fill(Rect{x + 7, top + 17, 4, 2}, true);   // clapper
+  fb.fill(Rect{x + 8, top + 19, 2, 1}, true);
+}
+
+// What the bottom line shows of the alarm: "" when hidden, the snooze mark included.
+void alarm_shown(const FaceState& s, char* buf, size_t n) {
+  if (!s.time_set || s.alarm == FaceState::kAlarmNone) {
+    snprintf(buf, n, "%s", "");
+    return;
+  }
+  char t[16];
+  format_alarm(s, t, sizeof t);
+  snprintf(buf, n, "%c%s", s.alarm == FaceState::kAlarmSnoozed ? 'z' : 'b', t);
+}
+
+void draw_alarm(Framebuffer& fb, const FaceState& s, int baseline) {
+  char buf[16];
+  format_alarm(s, buf, sizeof buf);
+  if (s.alarm == FaceState::kAlarmSnoozed) {
+    char z[24];
+    snprintf(z, sizeof z, "Zz %s", buf);
+    draw_text_centered(fb, fonts::kText30, kAlarmX, baseline, z);
+    return;
+  }
+  const int w = kBellW + kBellGap + text_width(fonts::kText30, buf);
+  const int x = kAlarmX - w / 2;
+  draw_bell(fb, x, baseline);
+  draw_text(fb, fonts::kText30, x + kBellW + kBellGap, baseline, buf);
+}
+
 void draw_battery_mark(Framebuffer& fb, uint8_t level) {
   fb.fill(Rect{kBatX, kBatY, kBatBodyW, 1}, true);
   fb.fill(Rect{kBatX, kBatY + kBatH - 1, kBatBodyW, 1}, true);
@@ -183,7 +230,10 @@ void render_face(Framebuffer& fb, const FaceState& s) {
   draw_glyph_centered(fb, fonts::kClockDigits, l.x[2], l.colon_w, kTimeBaseline, ':');
 
   format_temp(s.temp_dc, buf, sizeof buf);
-  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTempBaseline, buf);
+  const bool alarm = s.time_set && s.alarm != FaceState::kAlarmNone;
+  draw_text_centered(fb, fonts::kText30, alarm ? kTempWithAlarmX : Framebuffer::kWidth / 2,
+                     kTempBaseline, buf);
+  if (alarm) draw_alarm(fb, s, kTempBaseline);
 
   if (s.wifi_failed) draw_wifi_mark(fb);
   if (s.battery != 0) draw_battery_mark(fb, s.battery);
@@ -196,7 +246,13 @@ size_t face_dirty(const FaceState& before, const FaceState& after, Rect* out) {
     if (digit(before, r) != digit(after, r)) out[n++] = face_region(r);
   }
   if (!same_date(before, after)) out[n++] = face_region(FaceRegion::Date);
-  if (before.temp_dc != after.temp_dc) out[n++] = face_region(FaceRegion::Temp);
+  // The alarm shares the temperature's line (and moves it).
+  char a[20], b[20];
+  alarm_shown(before, a, sizeof a);
+  alarm_shown(after, b, sizeof b);
+  if (before.temp_dc != after.temp_dc || strcmp(a, b) != 0) {
+    out[n++] = face_region(FaceRegion::Temp);
+  }
   if (before.wifi_failed != after.wifi_failed) out[n++] = face_region(FaceRegion::WifiMark);
   if (before.battery != after.battery) out[n++] = face_region(FaceRegion::BatteryMark);
   return n;
@@ -219,6 +275,34 @@ void format_temp(int16_t temp_dc, char* buf, size_t n) {
   }
   const int v = temp_dc;
   snprintf(buf, n, "%s%d.%d °C", v < 0 ? "-" : "", std::abs(v) / 10, std::abs(v) % 10);
+}
+
+void format_alarm(const FaceState& s, char* buf, size_t n) {
+  if (s.alarm == FaceState::kAlarmNone) {
+    snprintf(buf, n, "%s", "");
+  } else if (s.alarm_weekday < 7) {
+    snprintf(buf, n, "%.3s %02u:%02u", kWeekdays[s.alarm_weekday], s.alarm_hour, s.alarm_minute);
+  } else {
+    snprintf(buf, n, "%02u:%02u", s.alarm_hour, s.alarm_minute);
+  }
+}
+
+void render_ringing(Framebuffer& fb, uint8_t hour, uint8_t minute, const char* title) {
+  fb.clear();
+  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kDateBaseline, title);
+  FaceState s;
+  s.hour = hour;
+  s.minute = minute;
+  const TimeLayout l = time_layout();
+  const FaceRegion digits[] = {FaceRegion::HourTens, FaceRegion::HourOnes, FaceRegion::MinuteTens,
+                               FaceRegion::MinuteOnes};
+  for (int i = 0; i < 4; ++i) {
+    const int slot = i < 2 ? i : i + 1;
+    draw_glyph_centered(fb, fonts::kClockDigits, l.x[slot], l.cell_w, kTimeBaseline,
+                        static_cast<uint8_t>(digit(s, digits[i])));
+  }
+  draw_glyph_centered(fb, fonts::kClockDigits, l.x[2], l.colon_w, kTimeBaseline, ':');
+  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTempBaseline, kRingHint);
 }
 
 }  // namespace inkwake

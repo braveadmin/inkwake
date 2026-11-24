@@ -40,33 +40,45 @@ bool sunrise_active(const Alarm& alarm, const LocalTime& now) {
   return m && *m > 0 && *m <= alarm.sunrise_minutes;
 }
 
-Ringer::Ringer(uint8_t snooze_minutes, uint8_t max_snoozes)
-    : snooze_minutes_(snooze_minutes), max_snoozes_(max_snoozes) {}
-
-void Ringer::trigger(int64_t /*now_min*/) {
-  state_ = RingState::Ringing;
-  snoozes_ = 0;
+void ring_trigger(Ringer& r, uint8_t alarm_id, int64_t now) {
+  r = Ringer{RingState::Ringing, alarm_id, 0, now, 0};
 }
 
-void Ringer::snooze(int64_t now_min) {
-  if (state_ != RingState::Ringing) return;
-  if (snoozes_ >= max_snoozes_) return;
-  ++snoozes_;
-  resume_at_ = now_min + snooze_minutes_;
-  state_ = RingState::Snoozed;
+void ring_snooze(Ringer& r, const RingConfig& c, int64_t now) {
+  if (r.state != RingState::Ringing || r.snoozes >= c.max_snoozes) return;
+  ++r.snoozes;
+  r.resume_at = now + c.snooze_s;
+  r.state = RingState::Snoozed;
 }
 
-void Ringer::dismiss() {
-  state_ = RingState::Idle;
-  snoozes_ = 0;
-}
+void ring_dismiss(Ringer& r) { r = Ringer{}; }
 
-bool Ringer::tick(int64_t now_min) {
-  if (state_ == RingState::Snoozed && now_min >= resume_at_) {
-    state_ = RingState::Ringing;
-    return true;
+RingEvent ring_tick(Ringer& r, const RingConfig& c, int64_t now) {
+  if (r.state == RingState::Snoozed && now >= r.resume_at) {
+    r.state = RingState::Ringing;
+    r.since = now;
+    return RingEvent::Restart;
   }
-  return false;
+  if (r.state == RingState::Ringing && now - r.since >= c.ring_timeout_s) {
+    if (r.snoozes < c.max_snoozes) {
+      ring_snooze(r, c, now);
+      return RingEvent::AutoSnooze;
+    }
+    ring_dismiss(r);
+    return RingEvent::GaveUp;
+  }
+  return RingEvent::None;
+}
+
+uint8_t ring_volume(uint32_t elapsed_s, uint8_t start_pct, uint8_t max_pct) {
+  // +5 % every 20 s.
+  const uint32_t v = start_pct + (elapsed_s / 20) * 5;
+  return static_cast<uint8_t>(v > max_pct ? max_pct : v);
+}
+
+bool beep_on(uint32_t ms) {
+  const uint32_t t = ms % kBeepCycleMs;
+  return t < 800 && (t / 100) % 2 == 0;
 }
 
 }  // namespace inkwake

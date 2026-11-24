@@ -74,34 +74,76 @@ void test_sunrise_window() {
   TEST_ASSERT_FALSE(sunrise_active(a, LocalTime{0, 6, 30}));  // ringing, not sunrise
 }
 
+static constexpr RingConfig kCfg{540, 2, 600};
+
+void test_ringer_starts_idle() {
+  Ringer r{};
+  TEST_ASSERT_EQUAL(RingState::Idle, r.state);
+  TEST_ASSERT_EQUAL(RingEvent::None, ring_tick(r, kCfg, 1000));
+}
+
 void test_ringer_snooze_cycle() {
-  Ringer r(9, 2);
-  r.trigger(100);
-  TEST_ASSERT_EQUAL(RingState::Ringing, r.state());
-  r.snooze(100);
-  TEST_ASSERT_EQUAL(RingState::Snoozed, r.state());
-  TEST_ASSERT_FALSE(r.tick(108));
-  TEST_ASSERT_TRUE(r.tick(109));
-  TEST_ASSERT_EQUAL(RingState::Ringing, r.state());
+  Ringer r{};
+  ring_trigger(r, 4, 100);
+  TEST_ASSERT_EQUAL(RingState::Ringing, r.state);
+  TEST_ASSERT_EQUAL_UINT8(4, r.alarm_id);
+  ring_snooze(r, kCfg, 100);
+  TEST_ASSERT_EQUAL(RingState::Snoozed, r.state);
+  TEST_ASSERT_EQUAL(RingEvent::None, ring_tick(r, kCfg, 639));
+  TEST_ASSERT_EQUAL(RingEvent::Restart, ring_tick(r, kCfg, 640));
+  TEST_ASSERT_EQUAL(RingState::Ringing, r.state);
+  TEST_ASSERT_EQUAL_INT64(640, r.since);
 }
 
 void test_ringer_max_snoozes_keeps_ringing() {
-  Ringer r(5, 1);
-  r.trigger(0);
-  r.snooze(0);
-  r.tick(5);
-  r.snooze(5);  // over the limit
-  TEST_ASSERT_EQUAL(RingState::Ringing, r.state());
-  TEST_ASSERT_EQUAL_UINT8(1, r.snoozes());
+  Ringer r{};
+  ring_trigger(r, 1, 0);
+  ring_snooze(r, kCfg, 0);
+  ring_tick(r, kCfg, 540);
+  ring_snooze(r, kCfg, 540);
+  ring_tick(r, kCfg, 1080);
+  ring_snooze(r, kCfg, 1080);  // over the limit
+  TEST_ASSERT_EQUAL(RingState::Ringing, r.state);
+  TEST_ASSERT_EQUAL_UINT8(2, r.snoozes);
 }
 
 void test_ringer_dismiss() {
-  Ringer r;
-  r.trigger(0);
-  r.snooze(0);
-  r.dismiss();
-  TEST_ASSERT_EQUAL(RingState::Idle, r.state());
-  TEST_ASSERT_FALSE(r.tick(1000));
+  Ringer r{};
+  ring_trigger(r, 1, 0);
+  ring_snooze(r, kCfg, 0);
+  ring_dismiss(r);
+  TEST_ASSERT_EQUAL(RingState::Idle, r.state);
+  TEST_ASSERT_EQUAL(RingEvent::None, ring_tick(r, kCfg, 100000));
+}
+
+void test_ringer_unattended_auto_snoozes_then_gives_up() {
+  Ringer r{};
+  ring_trigger(r, 1, 0);
+  TEST_ASSERT_EQUAL(RingEvent::None, ring_tick(r, kCfg, 599));
+  TEST_ASSERT_EQUAL(RingEvent::AutoSnooze, ring_tick(r, kCfg, 600));
+  TEST_ASSERT_EQUAL(RingEvent::Restart, ring_tick(r, kCfg, 1140));
+  TEST_ASSERT_EQUAL(RingEvent::AutoSnooze, ring_tick(r, kCfg, 1740));
+  TEST_ASSERT_EQUAL(RingEvent::Restart, ring_tick(r, kCfg, 2280));
+  TEST_ASSERT_EQUAL(RingEvent::GaveUp, ring_tick(r, kCfg, 2880));
+  TEST_ASSERT_EQUAL(RingState::Idle, r.state);
+}
+
+void test_ring_volume_ramps_and_caps() {
+  TEST_ASSERT_EQUAL_UINT8(5, ring_volume(0, 5, 40));
+  TEST_ASSERT_EQUAL_UINT8(5, ring_volume(19, 5, 40));
+  TEST_ASSERT_EQUAL_UINT8(10, ring_volume(20, 5, 40));
+  TEST_ASSERT_EQUAL_UINT8(40, ring_volume(600, 5, 40));
+}
+
+void test_beep_pattern() {
+  TEST_ASSERT_TRUE(beep_on(0));
+  TEST_ASSERT_TRUE(beep_on(99));
+  TEST_ASSERT_FALSE(beep_on(100));
+  TEST_ASSERT_TRUE(beep_on(600));
+  TEST_ASSERT_FALSE(beep_on(700));
+  TEST_ASSERT_FALSE(beep_on(800));
+  TEST_ASSERT_FALSE(beep_on(1199));
+  TEST_ASSERT_TRUE(beep_on(1200));
 }
 
 int main(int, char**) {
@@ -116,8 +158,12 @@ int main(int, char**) {
   RUN_TEST(test_next_alarm_picks_soonest);
   RUN_TEST(test_next_alarm_none_enabled);
   RUN_TEST(test_sunrise_window);
+  RUN_TEST(test_ringer_starts_idle);
   RUN_TEST(test_ringer_snooze_cycle);
   RUN_TEST(test_ringer_max_snoozes_keeps_ringing);
   RUN_TEST(test_ringer_dismiss);
+  RUN_TEST(test_ringer_unattended_auto_snoozes_then_gives_up);
+  RUN_TEST(test_ring_volume_ramps_and_caps);
+  RUN_TEST(test_beep_pattern);
   return UNITY_END();
 }
