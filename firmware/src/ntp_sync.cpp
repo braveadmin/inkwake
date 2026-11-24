@@ -21,6 +21,50 @@ int64_t now_us() {
   return static_cast<int64_t>(tv.tv_sec) * 1000000 + tv.tv_usec;
 }
 
+// True once connected, false after kWifiTimeoutMs.
+bool connect(const provision::Network& net) {
+  WiFi.begin(net.ssid, net.pass);
+  const uint32_t t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < kWifiTimeoutMs) delay(20);
+  if (WiFi.status() == WL_CONNECTED) return true;
+  WiFi.disconnect(false);  // stop the driver's retries before the next step
+  return false;
+}
+
+constexpr size_t kMaxSeen = 32;
+char g_seen[kMaxSeen][provision::kSsidMax + 1];  // scan results, names only
+
+// One blocking scan into g_seen. Returns how many names it holds.
+size_t scan() {
+  const int n = WiFi.scanNetworks(false);
+  size_t o = 0;
+  for (int i = 0; i < n && o < kMaxSeen; ++i) {
+    const String name = WiFi.SSID(i);
+    if (name.isEmpty() || name.length() > provision::kSsidMax) continue;  // hidden
+    snprintf(g_seen[o++], sizeof g_seen[0], "%s", name.c_str());
+  }
+  WiFi.scanDelete();
+  return o;
+}
+
+// Tries the saved networks as described in ntp_sync.h. Index of the one that
+// connected, or -1.
+int connect_any(const provision::WifiList& nets, Result& r) {
+  r.tried = 1;
+  if (connect(nets.nets[0])) return 0;
+  if (nets.count < 2) return -1;
+  const size_t n_seen = scan();
+  const char* seen[kMaxSeen];
+  for (size_t i = 0; i < n_seen; ++i) seen[i] = g_seen[i];
+  uint8_t order[provision::kMaxNetworks];
+  const size_t n = provision::others_in_range(nets, seen, n_seen, order);
+  for (size_t i = 0; i < n; ++i) {
+    r.tried++;
+    if (connect(nets.nets[order[i]])) return order[i];
+  }
+  return -1;
+}
+
 void wifi_off() {
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
@@ -96,20 +140,20 @@ char status_letter(Status s) {
   return '?';
 }
 
-Result run(const char* ssid, const char* pass, const char* server) {
+Result run(const provision::WifiList& nets, const char* server) {
   Result r{};
   r.reply = ntp::Reply::Ok;
+  r.network = -1;
   const uint32_t start = millis();
-  if (ssid == nullptr || *ssid == '\0') {
+  if (nets.count == 0) {
     r.status = Status::NoWifiConfig;
     return r;
   }
   WiFi.persistent(false);  // credentials live in our own NVS keys, not the Wi-Fi driver's
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, pass);
-  while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiTimeoutMs) delay(20);
+  r.network = static_cast<int8_t>(connect_any(nets, r));
   r.wifi_ms = millis() - start;
-  if (WiFi.status() != WL_CONNECTED) {
+  if (r.network < 0) {
     r.status = Status::WifiFailed;
   } else {
     IPAddress ip;

@@ -42,7 +42,8 @@ struct Shared {
   std::mutex mu;
   // Shown to the page.
   char ap[16];
-  char ssid[kSsidLen];  // saved network, or the one being tried
+  char ssid[kSsidLen];        // the network being tried
+  provision::WifiList saved;  // saved networks; passwords never leave the clock
   char tz[kTzLen];
   bool tz_saved;
   State state;
@@ -57,6 +58,8 @@ struct Shared {
   bool want_connect;
   char try_ssid[kSsidLen];
   char try_pass[kPassLen];
+  bool want_save;  // `saved` was edited from the page
+  bool want_close;
 };
 
 Shared g;
@@ -119,18 +122,73 @@ esp_err_t handle_index(httpd_req_t* req) {
   return httpd_resp_send(req, reinterpret_cast<const char*>(web::kIndexGz), web::kIndexGzLen);
 }
 
+// ["name",...] of the saved networks, in try order. Caller holds g.mu.
+// Returns the length written; `n` must hold kMaxNetworks escaped names.
+size_t saved_json(char* buf, size_t n) {
+  size_t o = static_cast<size_t>(snprintf(buf, n, "["));
+  for (size_t i = 0; i < g.saved.count; ++i) {
+    char esc[kSsidLen * 6];
+    provision::json_escape(g.saved.nets[i].ssid, esc, sizeof esc);
+    o += static_cast<size_t>(snprintf(buf + o, n - o, "%s\"%s\"", i ? "," : "", esc));
+  }
+  o += static_cast<size_t>(snprintf(buf + o, n - o, "]"));
+  return o;
+}
+
+constexpr size_t kSavedJsonMax = provision::kMaxNetworks * (kSsidLen * 6 + 3) + 3;
+
 esp_err_t handle_get_settings(httpd_req_t* req) {
   touch();
-  char ssid[kSsidLen * 6], tz[kTzLen * 6], ap[32], buf[640];
+  char nets[kSavedJsonMax], tz[kTzLen * 6], ap[32], buf[kSavedJsonMax + 640];
   {
     std::lock_guard<std::mutex> lock(g.mu);
-    provision::json_escape(g.ssid, ssid, sizeof ssid);
+    saved_json(nets, sizeof nets);
     provision::json_escape(g.tz, tz, sizeof tz);
     provision::json_escape(g.ap, ap, sizeof ap);
-    snprintf(buf, sizeof buf, "{\"ssid\":\"%s\",\"tz\":\"%s\",\"tz_saved\":%s,\"ap\":\"%s\"}", ssid,
-             tz, g.tz_saved ? "true" : "false", ap);
+    snprintf(buf, sizeof buf,
+             "{\"networks\":%s,\"max\":%u,\"tz\":\"%s\",\"tz_saved\":%s,\"ap\":\"%s\"}", nets,
+             static_cast<unsigned>(provision::kMaxNetworks), tz, g.tz_saved ? "true" : "false", ap);
   }
   return send_json(req, "200 OK", buf);
+}
+
+// Remove a saved network or move it up one place. Saved by run().
+esp_err_t handle_networks(httpd_req_t* req) {
+  touch();
+  char body[kBodyMax];
+  if (!read_body(req, body, sizeof body)) return ESP_OK;
+  char op[8], ssid[kSsidLen];
+  if (!provision::form_value(body, "op", op, sizeof op) ||
+      !provision::form_value(body, "ssid", ssid, sizeof ssid)) {
+    return send_error(req, "400 Bad Request", "op and ssid needed");
+  }
+  char nets[kSavedJsonMax], buf[kSavedJsonMax + 32];
+  {
+    std::lock_guard<std::mutex> lock(g.mu);
+    const int i = provision::find(g.saved, ssid);
+    if (i < 0) return send_error(req, "404 Not Found", "no saved network by that name");
+    const auto idx = static_cast<size_t>(i);
+    if (strcmp(op, "remove") == 0) {
+      provision::remove(g.saved, idx);
+    } else if (strcmp(op, "up") == 0) {
+      provision::move_up(g.saved, idx);  // already first: nothing to do
+    } else {
+      return send_error(req, "400 Bad Request", "op: remove or up");
+    }
+    g.want_save = true;
+    saved_json(nets, sizeof nets);
+  }
+  snprintf(buf, sizeof buf, "{\"networks\":%s}", nets);
+  return send_json(req, "200 OK", buf);
+}
+
+esp_err_t handle_close(httpd_req_t* req) {
+  touch();
+  {
+    std::lock_guard<std::mutex> lock(g.mu);
+    g.want_close = true;
+  }
+  return send_json(req, "200 OK", "{\"ok\":true}");
 }
 
 esp_err_t handle_post_settings(httpd_req_t* req) {
@@ -244,6 +302,8 @@ httpd_handle_t start_server() {
       {"/api/scan", HTTP_GET, handle_scan, nullptr},
       {"/api/wifi", HTTP_POST, handle_wifi, nullptr},
       {"/api/status", HTTP_GET, handle_status, nullptr},
+      {"/api/networks", HTTP_POST, handle_networks, nullptr},
+      {"/api/close", HTTP_POST, handle_close, nullptr},
       {"/*", HTTP_GET, handle_redirect, nullptr},  // last: wildcard
   };
   for (const httpd_uri_t& u : uris) httpd_register_uri_handler(server, &u);
@@ -296,19 +356,39 @@ const char* outcome_name(Outcome o) {
       return "timed out";
     case Outcome::Cancelled:
       return "cancelled";
+    case Outcome::Closed:
+      return "closed";
   }
   return "?";
 }
+
+namespace {
+
+// Saves the list if the page edited it. Main task only.
+void save_if_edited(const Hooks& hooks) {
+  static provision::WifiList copy;
+  {
+    std::lock_guard<std::mutex> lock(g.mu);
+    if (!g.want_save) return;
+    g.want_save = false;
+    copy = g.saved;
+  }
+  hooks.save_networks(copy);  // a failed NVS write is rare; the edit is then lost at reboot
+  memset(&copy, 0, sizeof copy);
+}
+
+}  // namespace
 
 Outcome run(const Hooks& hooks, uint32_t idle_ms) {
   {
     std::lock_guard<std::mutex> lock(g.mu);
     g.state = State::Idle;
+    g.ssid[0] = '\0';
     g.net_count = 0;
     g.scanning = true;
-    g.want_scan = g.want_tz = g.want_connect = false;
+    g.want_scan = g.want_tz = g.want_connect = g.want_save = g.want_close = false;
     g.offered_time = 0;
-    hooks.load(g.ssid, sizeof g.ssid, g.tz, sizeof g.tz, g.tz_saved);
+    hooks.load(g.saved, g.tz, sizeof g.tz, g.tz_saved);
   }
   WiFi.persistent(false);  // credentials live in our own NVS keys
   WiFi.mode(WIFI_AP_STA);
@@ -328,7 +408,8 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
   for (;;) {
     dns.processNextRequest();
     collect_scan();
-    bool want_scan, want_tz, want_connect;
+    save_if_edited(hooks);
+    bool want_scan, want_tz, want_connect, want_close;
     char new_tz[kTzLen], ssid[kSsidLen], pass[kPassLen];
     time_t offered;
     {
@@ -336,6 +417,7 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
       want_scan = g.want_scan;
       want_tz = g.want_tz;
       want_connect = g.want_connect;
+      want_close = g.want_close;
       offered = g.offered_time;
       memcpy(new_tz, g.new_tz, sizeof new_tz);
       memcpy(ssid, g.try_ssid, sizeof ssid);
@@ -364,7 +446,19 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
         dns.processNextRequest();
         delay(20);
       }
-      const bool ok = WiFi.status() == WL_CONNECTED && hooks.save_wifi(ssid, pass);
+      bool ok = WiFi.status() == WL_CONNECTED;
+      if (ok) {
+        // Goes first in the list; a full list forgets its last network.
+        static provision::WifiList copy;
+        {
+          std::lock_guard<std::mutex> lock(g.mu);
+          provision::remember(g.saved, ssid, pass);
+          g.want_save = false;  // saved below with any earlier edits
+          copy = g.saved;
+        }
+        ok = hooks.save_networks(copy);
+        memset(&copy, 0, sizeof copy);
+      }
       {
         std::lock_guard<std::mutex> lock(g.mu);
         g.state = ok ? State::Connected : State::Failed;
@@ -383,6 +477,10 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
       hooks.show(Screen::Failed, g.ap, ssid);
       touch();
     }
+    if (want_close) {
+      outcome = Outcome::Closed;
+      break;
+    }
     if (hooks.cancel()) {
       outcome = Outcome::Cancelled;
       break;
@@ -392,11 +490,16 @@ Outcome run(const Hooks& hooks, uint32_t idle_ms) {
   }
 
   if (server != nullptr) httpd_stop(server);
+  save_if_edited(hooks);  // an edit that came in during the last loop
   dns.stop();
   WiFi.softAPdisconnect(true);
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
-  memset(g.try_pass, 0, sizeof g.try_pass);
+  {
+    std::lock_guard<std::mutex> lock(g.mu);
+    memset(g.try_pass, 0, sizeof g.try_pass);
+    memset(&g.saved, 0, sizeof g.saved);
+  }
   return outcome;
 }
 

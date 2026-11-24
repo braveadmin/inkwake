@@ -30,14 +30,24 @@ li .sig{margin-left:auto;color:var(--muted);font-size:.85rem}
 #status{min-height:1.4em;margin-top:12px;font-weight:600}
 .ok{color:var(--ok)}.bad{color:var(--bad)}
 .hidden{display:none}
+#saved li{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--line)}
+#saved li .name{flex:1;overflow-wrap:anywhere}
+#saved li .first{color:var(--muted);font-size:.85rem}
+button.secondary{background:none;color:var(--ink);border:1px solid var(--line);margin-top:8px}
 </style>
 </head>
 <body>
 <main>
 <h1>inkwake</h1>
 
+<section id="savedBox" class="hidden">
+  <h2>Saved networks</h2>
+  <ul id="saved"></ul>
+  <p class="hint">The clock tries them from the top. The one that last connected moves to the top by itself.</p>
+</section>
+
 <section id="wifi">
-  <div class="row"><h2>Wi-Fi</h2><button class="link" id="rescan" type="button">Scan again</button></div>
+  <div class="row"><h2 id="addTitle">Wi-Fi</h2><button class="link" id="rescan" type="button">Scan again</button></div>
   <ul id="nets"><li class="hint">Looking for networks...</li></ul>
   <label for="ssid">Network name</label>
   <input id="ssid" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="32">
@@ -45,6 +55,7 @@ li .sig{margin-left:auto;color:var(--muted);font-size:.85rem}
   <input id="pass" type="password" autocomplete="off" maxlength="63">
   <label style="display:flex;gap:8px;align-items:center"><input id="show" type="checkbox" style="width:auto"> Show password</label>
   <p class="hint">2.4 GHz networks only. Leave the password empty for an open network.</p>
+  <p class="hint hidden" id="fullHint"></p>
 </section>
 
 <section id="time">
@@ -57,6 +68,7 @@ li .sig{margin-left:auto;color:var(--muted);font-size:.85rem}
 </section>
 
 <button id="save" type="button">Save and connect</button>
+<button id="done" class="secondary" type="button">Done</button>
 <div id="status"></div>
 <p class="hint">The clock's screen shows the result too. If this page stops answering, look there.</p>
 </main>
@@ -142,6 +154,60 @@ function selectedTz() {
   return v === "custom" ? $("custom").value.trim() : ZONES[Number(v)][2];
 }
 
+function showSaved(names) {
+  settings.networks = names;
+  const ul = $("saved");
+  ul.innerHTML = "";
+  $("savedBox").classList.toggle("hidden", !names.length);
+  $("addTitle").textContent = names.length ? "Add a network" : "Wi-Fi";
+  names.forEach((name, i) => {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.className = "name";
+    span.textContent = name;
+    li.append(span);
+    if (i === 0) {
+      const first = document.createElement("span");
+      first.className = "first";
+      first.textContent = "tried first";
+      li.append(first);
+    } else {
+      li.append(listButton("Move up", "up", name));
+    }
+    li.append(listButton("Remove", "remove", name));
+    ul.append(li);
+  });
+  const max = settings.max || 5;
+  const full = names.length >= max;
+  $("fullHint").classList.toggle("hidden", !full);
+  if (full) {
+    $("fullHint").textContent = "The list is full (" + max + "). A new network replaces the last one, "
+      + names[names.length - 1] + ", unless you remove one first.";
+  }
+}
+
+function listButton(text, op, name) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "link";
+  b.textContent = text;
+  b.onclick = async () => {
+    // Asks with a second tap: captive-portal browsers may not show confirm().
+    if (op === "remove" && b.textContent !== "Sure? Tap again") {
+      b.textContent = "Sure? Tap again";
+      setTimeout(() => { b.textContent = text; }, 4000);
+      return;
+    }
+    try {
+      const r = await api("/api/networks", {op: op, ssid: name});
+      showSaved(r.networks || []);
+    } catch (e) {
+      setStatus(e.message, "bad");
+    }
+  };
+  return b;
+}
+
 function showNets(list) {
   const ul = $("nets");
   ul.innerHTML = "";
@@ -219,17 +285,31 @@ async function save() {
   }
 }
 
+// Saves the timezone and closes setup without adding a network.
+async function done() {
+  $("save").disabled = $("done").disabled = true;
+  try {
+    await api("/api/settings", {tz: selectedTz(), now: String(Math.floor(Date.now() / 1000))});
+    await api("/api/close", {});
+    setStatus("Saved. Setup is closed: you can leave this network.", "ok");
+  } catch (e) {
+    setStatus(e.message, "bad");
+    $("save").disabled = $("done").disabled = false;
+  }
+}
+
 async function init() {
   $("show").onchange = () => { $("pass").type = $("show").checked ? "text" : "password"; };
   $("zone").onchange = zoneChanged;
   $("rescan").onclick = () => scan(true);
   $("save").onclick = save;
+  $("done").onclick = done;
   try {
     settings = await api("/api/settings");
   } catch (e) {
     setStatus("Could not reach the clock: " + e.message, "bad");
   }
-  if (settings.ssid) $("ssid").value = settings.ssid;
+  showSaved(settings.networks || []);
   fillZones(settings.tz);
   scan(false);
 }

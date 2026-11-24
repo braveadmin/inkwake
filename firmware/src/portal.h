@@ -4,11 +4,14 @@
 // page), and the settings page with its small API:
 //
 //   GET  /                 the page (gzipped, web/index.html)
-//   GET  /api/settings     {"ssid","tz","tz_saved","ap"}; never the password
+//   GET  /api/settings     {"networks":[names],"max","tz","tz_saved","ap"}; never passwords
 //   POST /api/settings     form: tz=POSIX, now=Unix UTC (only used if the time is not set)
 //   GET  /api/scan[?fresh=1]  {"scanning", "networks":[{"ssid","rssi","open"}]}
 //   POST /api/wifi         form: ssid, pass; starts a connection try
 //   GET  /api/status       {"state":"idle|connecting|connected|failed","ssid"}
+//   POST /api/networks     form: op=remove|up, ssid; edits the saved list (#33),
+//                          answers {"networks":[names]}
+//   POST /api/close        ends setup
 //   anything else          302 to the page (captive portal probes)
 //
 // Web requests run in the server's own task and only queue work; run() does
@@ -18,6 +21,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+
+#include "wifi_list.h"
 
 namespace inkwake::portal {
 
@@ -32,16 +37,19 @@ enum class Outcome : uint8_t {
   Connected,  // credentials saved and working
   Timeout,    // no page activity for the idle timeout
   Cancelled,  // KEY pressed
+  Closed,     // "Done" on the page
 };
 
 struct Hooks {
   void (*show)(Screen screen, const char* ap_name, const char* ssid);
-  // Saved values for the page: network name (may be empty), TZ string, and
-  // whether a TZ was ever saved (else the page suggests the phone's zone).
-  void (*load)(char* ssid, size_t ssid_n, char* tz, size_t tz_n, bool& tz_saved);
+  // Saved values for the page: the network list, TZ string, and whether a TZ
+  // was ever saved (else the page suggests the phone's zone).
+  void (*load)(provision::WifiList& nets, char* tz, size_t tz_n, bool& tz_saved);
   bool (*apply_tz)(const char* posix);  // checked already; false if saving failed
   void (*offer_time)(time_t utc);       // phone's clock, for a clock that lost its time
-  bool (*save_wifi)(const char* ssid, const char* pass);
+  // The whole list, after a network connected (it is then first) or the page
+  // removed or moved one.
+  bool (*save_networks)(const provision::WifiList& nets);
   bool (*cancel)();  // polled; true ends setup
 };
 
