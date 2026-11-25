@@ -35,7 +35,8 @@ jobs:
           python-version: "3.12"
       - run: pip install -r firmware/requirements.txt
       - run: pio run -d firmware -e device
-      - run: sudo apt-get update && sudo apt-get install -y openscad && make -C enclosure
+      # Enclosure STLs stay out of releases until the case is measured and
+      # test-printed (S1/S3); enclosure.yml still builds them as CI artifacts.
       - name: Upload release assets
         run: |
           # Fresh install: 0x0 bootloader, 0x8000 partitions, 0x10000 firmware.
@@ -45,5 +46,5 @@ jobs:
           cp $b/bootloader.bin "inkwake-${TAG}-bootloader.bin"
           cp $b/partitions.bin "inkwake-${TAG}-partitions.bin"
           files="inkwake-${TAG}.bin inkwake-${TAG}-bootloader.bin inkwake-${TAG}-partitions.bin"
-          sha256sum $files enclosure/build/*.stl > SHA256SUMS
-          gh release upload "$TAG" $files enclosure/build/*.stl SHA256SUMS --clobber
+          sha256sum $files > SHA256SUMS
+          gh release upload "$TAG" $files SHA256SUMS --clobber
