@@ -37,7 +37,9 @@ the board by USB and open https://adafruit.github.io/Adafruit_WebSerial_ESPTool/
 
 First install: Erase, then all three files. Update: only the firmware at 0x10000, without Erase
 (Erase wipes the saved Wi-Fi networks, timezone and alarms). On first start the clock opens its
-Wi-Fi setup: scan the QR code on the screen with a phone. Serial console (115200 baud):
+Wi-Fi setup: scan the QR code on the screen with a phone. Without Wi-Fi, set the clock with the
+two board buttons: hold KEY 2 s for the menu (date & time, timezone, Wi-Fi); BOOT moves on or
+adds 1, KEY selects, KEY held goes back. Serial console (115200 baud):
 https://googlechromelabs.github.io/serial-terminal/, type `help`.
 
 ## Build

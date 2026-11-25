@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-20
+- Amended by ADR-0018 (2026-11-25): Wi-Fi is optional (Advanced mode); first boot opens the date & time editor instead of setup (#34). KEY held 5 s still opens setup, also from the button menu.
 
 ## Context
 

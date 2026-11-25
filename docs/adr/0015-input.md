@@ -2,6 +2,7 @@
 
 - Status: Proposed
 - Date: 2026-11-02
+- Amended by ADR-0018 (2026-11-25): until the pads exist, KEY + BOOT are the main input, with a button menu drawn on the panel.
 
 ## Decision
 

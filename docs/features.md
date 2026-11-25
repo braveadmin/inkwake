@@ -17,4 +17,4 @@ The scope. P0 and P1 make v1.0; P2 ships after it (M8). Each row is a GitHub iss
 | F11 | Room temperature | On-board SHTC3 shown on the clock face; offset calibration in config; external SHT40 if calibration isn't enough | P1 | M2 |
 | F12 | NTP synchronization | Sync at boot and daily against a configurable server, POSIX TZ with DST, written to the RTC; runs from the RTC when Wi-Fi is down | P0 | M2 |
 
-Implied foundations (M2): RTC driver, Wi-Fi provisioning, offline alarm guarantee.
+Implied foundations (M2): RTC driver, Wi-Fi provisioning, offline alarm guarantee, button menu to set the clock without Wi-Fi (ADR-0018).

@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-23
+- Amended by ADR-0018 (2026-11-25): alarms also edited with KEY + BOOT in the button menu (#55); KEY held 2 s on the face opens the menu unless an alarm is snoozed.
 
 ## Context
 

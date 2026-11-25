@@ -7,6 +7,8 @@ They are distributed under the SIL Open Font License 1.1 below, not under the fi
 | --- | --- | --- |
 | clock_digits.h | Lato Bold 2.015 (Lato-Bold.ttf, Debian fonts-lato 2.015-1) | 150 px, `0-9 : -` |
 | text30.h | Lato Semibold 2.015 (Lato-Semibold.ttf, Debian fonts-lato 2.015-1) | 30 px, ASCII + ° |
+| text20.h | Lato Semibold 2.015 (Lato-Semibold.ttf, Debian fonts-lato 2.015-1) | 20 px, ASCII + ° |
+| value60.h | Lato Bold 2.015 (Lato-Bold.ttf, Debian fonts-lato 2.015-1) | 60 px, `0-9 : -` |
 
 Lato: Copyright (c) 2011-2015 by tyPoland Lukasz Dziedzic (http://www.typoland.com/) with Reserved
 Font Name "Lato". Upstream: http://www.latofonts.com/. These renderings are Modified Versions under
