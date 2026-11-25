@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 #include "font.h"
 #include "fonts/text20.h"
@@ -43,6 +44,14 @@ constexpr int kDayGap = 6;
 constexpr int kDayTextDy = 22;  // text baseline below the cell top
 constexpr int kDayBarGap = 3;   // bar under the day being changed
 constexpr int kDayBarH = 4;
+// Alarm editor, second page (#43): volume digits, ten level cells, ramp.
+constexpr int kVolumeBaseline = 145;
+constexpr int kVolumeLabelGap = 16;  // "Volume" to the left of the digits
+constexpr int kLevelTop = 162;
+constexpr int kLevelW = 26;
+constexpr int kLevelH = 18;
+constexpr int kLevelGap = 4;
+constexpr int kRampBaseline = 222;
 // Save and Cancel, both editors: outlined, filled when marked.
 constexpr int kButtonsBaseline = 284;
 constexpr int kButtonW = 120;
@@ -240,11 +249,58 @@ int day_x(int d) {
   return (Framebuffer::kWidth - kRowW) / 2 + d * (kDayW + kDayGap);
 }
 
-Rect preset_rect(const char* days) {
-  const int w = text_width(fonts::kText30, days);
+// Black mark around a centred line of 30 px text.
+Rect text30_rect(const char* text, int baseline) {
+  const int w = text_width(fonts::kText30, text);
   return Rect{(Framebuffer::kWidth - w) / 2 - kPresetPad,
-              kPresetBaseline - fonts::kText30.ascent - kPresetPad, w + 2 * kPresetPad,
+              baseline - fonts::kText30.ascent - kPresetPad, w + 2 * kPresetPad,
               fonts::kText30.ascent + 2 * kPresetPad + 7};  // + room for descenders
+}
+
+Rect preset_rect(const char* days) { return text30_rect(days, kPresetBaseline); }
+
+// The volume field: always two digits wide, so the mark does not jump at 10.
+Rect volume_rect() {
+  return mark_rect((Framebuffer::kWidth - digits_w(2)) / 2, digits_w(2), kVolumeBaseline);
+}
+
+int level_x(int i) {
+  constexpr int kRowW = 10 * kLevelW + 9 * kLevelGap;
+  return (Framebuffer::kWidth - kRowW) / 2 + i * (kLevelW + kLevelGap);
+}
+
+void draw_sound_page(Framebuffer& fb, const AlarmEditView& v) {
+  const Rect vr = volume_rect();
+  const bool vol_marked = v.field == kAlarmFieldVolume;
+  if (vol_marked) fb.fill(vr, true);
+  char buf[4];
+  snprintf(buf, sizeof buf, "%d", v.volume);
+  const int n = static_cast<int>(strlen(buf));
+  const int cw = cell_w();
+  int x = (Framebuffer::kWidth - digits_w(n)) / 2;
+  for (int i = 0; i < n; ++i, x += cw + kDigitGap) {
+    draw_glyph_centered(fb, fonts::kValue60, x, cw, kVolumeBaseline, static_cast<uint8_t>(buf[i]),
+                        !vol_marked);
+  }
+  const char* label = "Volume";
+  draw_text(fb, fonts::kText20, vr.x - kVolumeLabelGap - text_width(fonts::kText20, label),
+            kVolumeBaseline, label);
+  for (int i = 0; i < 10; ++i) {
+    const int lx = level_x(i);
+    if (i < v.volume) {
+      fb.fill(Rect{lx, kLevelTop, kLevelW, kLevelH}, true);
+    } else {
+      fb.fill(Rect{lx, kLevelTop, kLevelW, kDayBorder}, true);
+      fb.fill(Rect{lx, kLevelTop + kLevelH - kDayBorder, kLevelW, kDayBorder}, true);
+      fb.fill(Rect{lx, kLevelTop, kDayBorder, kLevelH}, true);
+      fb.fill(Rect{lx + kLevelW - kDayBorder, kLevelTop, kDayBorder, kLevelH}, true);
+    }
+  }
+  const char* ramp = v.ramp != nullptr ? v.ramp : "";
+  const bool ramp_marked = v.field == kAlarmFieldRamp;
+  if (ramp_marked) fb.fill(text30_rect(ramp, kRampBaseline), true);
+  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kRampBaseline, ramp,
+                     !ramp_marked);
 }
 
 }  // namespace
@@ -259,13 +315,24 @@ Rect alarm_field_rect(const AlarmEditView& v, int field) {
     const int top = kDayTop;
     return Rect{day_x(field - 3), top, kDayW, kDayH + kDayBarGap + kDayBarH};
   }
+  if (field == kAlarmFieldVolume) return volume_rect();
+  if (field == kAlarmFieldRamp) return text30_rect(v.ramp != nullptr ? v.ramp : "", kRampBaseline);
   return Rect{};
+}
+
+bool alarm_sound_page(const AlarmEditView& v) {
+  return v.field >= kAlarmFieldVolume || v.field < 0;
 }
 
 void render_alarm_edit(Framebuffer& fb, const char* title, const AlarmEditView& v,
                        const ButtonLabels& buttons) {
   fb.clear();
   draw_buttons_and_title(fb, title, buttons);
+  if (alarm_sound_page(v)) {
+    draw_sound_page(fb, v);
+    draw_editor_buttons(fb, v.button);
+    return;
+  }
   const int values[] = {v.hour, v.minute};
   draw_row(fb, kAlarmTimeRow, values, v.field, kAlarmTimeBaseline);
 

@@ -25,6 +25,14 @@ constexpr uint8_t kWeekend = SAT | SUN;
 constexpr uint8_t kEveryDay = kWeekdays | kWeekend;
 constexpr uint8_t kOneShot = 0;  // days == 0: fire once at the next hour:minute
 
+// Beep volume (#43): a level 1-10 per alarm. The top level is 50 + 5 x level %
+// on audio::beep's 0-100 % scale (-40..0 dBFS): level 1 = 55 % (about -18
+// dBFS), 8 = 90 % (the fixed value before #43), 10 = full. There is no level 0,
+// so an alarm can never be set silent.
+constexpr uint8_t kMinVolume = 1;
+constexpr uint8_t kMaxVolume = 10;
+constexpr uint8_t kDefaultVolume = 8;
+
 struct Alarm {
   uint8_t id = 0;
   std::string label;
@@ -33,7 +41,9 @@ struct Alarm {
   uint8_t days = kWeekdays;
   bool enabled = true;
   std::string sound = "default";
-  uint8_t sunrise_minutes = 0;  // 0 = no sunrise light
+  uint8_t sunrise_minutes = 0;      // 0 = no sunrise light
+  uint8_t volume = kDefaultVolume;  // kMinVolume .. kMaxVolume
+  bool ramp = true;                 // rising: starts 40 % below the level's top
 };
 
 // Local wall-clock time, already timezone-adjusted by the caller.
@@ -92,9 +102,15 @@ void ring_dismiss(Ringer& r);
 // Call on every wake / loop pass.
 RingEvent ring_tick(Ringer& r, const RingConfig& c, int64_t now);
 
-// Beep volume in percent after `elapsed_s` of ringing: starts quiet and
-// rises in steps (ADR-0006: wake-up volume sits around 5-20 %).
-uint8_t ring_volume(uint32_t elapsed_s, uint8_t start_pct, uint8_t max_pct);
+// Top beep volume of a level in percent (audio::beep scale). Levels outside
+// kMinVolume .. kMaxVolume count as the nearest one.
+uint8_t volume_pct(uint8_t level);
+
+// Beep volume in percent after `elapsed_s` of ringing at `level`. With `ramp`
+// it starts 40 % below the top and rises 5 % every 20 s (ADR-0006: wake-up
+// volume sits around 5-20 %; the default level 8 rings 50 % -> 90 %, as before
+// #43); without, it rings at the top from the start.
+uint8_t ring_volume(uint32_t elapsed_s, uint8_t level, bool ramp);
 
 // Beep pattern, 1.2 s: four 100 ms beeps 100 ms apart, then 400 ms quiet.
 constexpr uint32_t kBeepCycleMs = 1200;

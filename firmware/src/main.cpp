@@ -114,7 +114,7 @@ constexpr int kKeyPin = 18;  // active low, external pull-up; wakes from deep sl
 constexpr int kBootPin = 0;  // active low, external pull-up; wakes from deep sleep (#55)
 constexpr int kAmpPin = 46;  // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;   // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E0022;       // changed with the RtcState layout
+constexpr uint32_t kMagic = 0x1A7E0023;       // changed with the RtcState layout
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -174,11 +174,12 @@ constexpr size_t kSsidLen = 33;  // 32 + NUL
 constexpr size_t kPassLen = 64;  // WPA2 passphrase up to 63 + NUL
 constexpr size_t kHostLen = 64;
 constexpr char kPrefAlarms[] = "alarms";  // sched::encode blob
-constexpr size_t kAlarmBlobMax = 4 + sched::kMaxAlarms * (8 + sched::kMaxLabel + sched::kMaxSound);
+constexpr size_t kAlarmBlobMax =
+    4 + sched::kMaxAlarms * (sched::kBlobFixed + sched::kMaxLabel + sched::kMaxSound);
 constexpr uint32_t kDismissHoldMs = 2'000;  // KEY held this long stops a ringing or snoozed alarm
-constexpr uint8_t kRingStartPct = 50;       // beep loudness ramp, audio::beep scale (dB-like)
-constexpr uint8_t kRingMaxPct = 90;
-constexpr uint8_t kTestAlarmId = 0;  // `alarm test`
+constexpr uint32_t kTestBeepMs = 3 * kBeepCycleMs;  // `alarm beep`, Test on the setup page
+constexpr uint32_t kMenuBeepMs = 800;               // volume changed in the menu: four beeps
+constexpr uint8_t kTestAlarmId = 0;                 // `alarm test`
 
 struct RtcState {
   uint32_t magic;
@@ -835,6 +836,16 @@ uint8_t show_ringing() {
   return c.minute;
 }
 
+// Plays the beep pattern for `ms` at a volume level's top loudness (#43), to
+// try a level without an alarm. False if the codec did not answer.
+bool play_level(uint8_t level, uint32_t ms) {
+  const bool sound = audio::begin();
+  uint32_t pos_ms = 0;
+  if (sound) audio::beep(ms, volume_pct(level), pos_ms);
+  audio::end();
+  return sound;
+}
+
 // Beeps until the alarm is snoozed, stopped or gives up, then redraws the face.
 // A KEY press already down when ringing starts counts only after its release.
 void ring_loop() {
@@ -844,13 +855,21 @@ void ring_loop() {
                   sound ? "" : " (no sound: speaker codec did not answer)");
   }
   uint8_t shown_min = show_ringing();
+  // The ringing alarm's volume (#43); `alarm test` and a deleted alarm ring
+  // with the defaults.
+  uint8_t level = kDefaultVolume;
+  bool ramp = true;
+  if (const auto i = sched::find(g_alarms, g_rtc.ring.alarm_id)) {
+    level = g_alarms[*i].volume;
+    ramp = g_alarms[*i].ramp;
+  }
   uint32_t pos_ms = 0;
   bool was_down = digitalRead(kKeyPin) == LOW;
   uint32_t down_ms = 0;  // 0 = no press counted
   while (g_rtc.ring.state == RingState::Ringing) {
     const int64_t now = time(nullptr);
     const auto elapsed = static_cast<uint32_t>(now - g_rtc.ring.since);
-    audio::beep(100, ring_volume(elapsed, kRingStartPct, kRingMaxPct), pos_ms);
+    audio::beep(100, ring_volume(elapsed, level, ramp), pos_ms);
     const bool down = digitalRead(kKeyPin) == LOW;
     if (down && !was_down) down_ms = millis() | 1;
     if (down && down_ms != 0 && millis() - down_ms >= kDismissHoldMs) {
@@ -951,9 +970,10 @@ void setup_alarms_json(char* buf, size_t n) {
     }
     snprintf(item, sizeof item,
              "%s{\"id\":%u,\"time\":\"%02u:%02u\",\"days\":\"%s\",\"mask\":%u,\"on\":%s,"
-             "\"label\":\"%s\",\"next\":\"%s\"}",
+             "\"label\":\"%s\",\"next\":\"%s\",\"volume\":%u,\"ramp\":%s}",
              out.size() > 1 ? "," : "", a.id, a.hour, a.minute, sched::format_days(a.days).c_str(),
-             a.days, a.enabled ? "true" : "false", label, next);
+             a.days, a.enabled ? "true" : "false", label, next, a.volume,
+             a.ramp ? "true" : "false");
     if (out.size() + strlen(item) + 2 > n) break;  // cannot happen with 16 alarms in 4 KB
     out += item;
   }
@@ -961,12 +981,31 @@ void setup_alarms_json(char* buf, size_t n) {
   snprintf(buf, n, "%s", out.c_str());
 }
 
-// POST /api/alarms: op=add|save|del, id, time=HH:MM, days (parse_days form), label, on=1|0.
+// "1".."10" -> level. False on anything else (refused, never clamped).
+bool parse_volume(const char* s, uint8_t& level) {
+  char* end = nullptr;
+  const long v = strtol(s, &end, 10);
+  if (end == s || *end != '\0' || v < kMinVolume || v > kMaxVolume) return false;
+  level = static_cast<uint8_t>(v);
+  return true;
+}
+
+// POST /api/alarms: op=add|save|del, id, time=HH:MM, days (parse_days form), label, on=1|0,
+// volume=1..10 and ramp=1|0 (#43; kept as they are when left out, defaults on add).
+// op=test&volume=N plays the beep at that level for a few seconds without saving.
 const char* setup_alarm_edit(const char* form) {
   char op[8] = "", id_s[8] = "", time_s[8] = "", days_s[48] = "", on_s[4] = "1";
+  char vol_s[8] = "", ramp_s[4] = "";
   char label[sched::kMaxLabel + 1] = "";
   provision::form_value(form, "op", op, sizeof op);
   provision::form_value(form, "id", id_s, sizeof id_s);
+  const bool has_vol = provision::form_value(form, "volume", vol_s, sizeof vol_s) && vol_s[0];
+  const bool has_ramp = provision::form_value(form, "ramp", ramp_s, sizeof ramp_s) && ramp_s[0];
+  uint8_t level = kDefaultVolume;
+  if (has_vol && !parse_volume(vol_s, level)) return "volume 1-10";
+  if (strcmp(op, "test") == 0) {
+    return play_level(level, kTestBeepMs) ? nullptr : "no sound: the speaker codec did not answer";
+  }
   std::vector<Alarm> v = g_alarms;
   Alarm* a = nullptr;
   if (strcmp(op, "add") == 0) {
@@ -999,6 +1038,8 @@ const char* setup_alarm_edit(const char* form) {
     a->label = label;
     provision::form_value(form, "on", on_s, sizeof on_s);
     a->enabled = strcmp(on_s, "0") != 0;
+    if (has_vol) a->volume = level;
+    if (has_ramp) a->ramp = strcmp(ramp_s, "0") != 0;
     if (const char* why = sched::check(*a)) return why;
   }
   if (!save_alarms(v)) return "saved until power-off only (NVS write failed)";
@@ -1066,11 +1107,11 @@ void draw_menu(const menu::Menu& m) {
         menu_buttons(m));
   } else if (m.screen() == menu::Screen::AlarmEdit) {
     const menu::AlarmEdit& e = m.alarm_edit();
-    render_alarm_edit(
-        g_fb, m.title(),
-        {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
-         editor_field(m, static_cast<int>(e.field())), static_cast<int>(m.editor_button())},
-        menu_buttons(m));
+    render_alarm_edit(g_fb, m.title(),
+                      {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
+                       editor_field(m, static_cast<int>(e.field())),
+                       static_cast<int>(m.editor_button()), e.volume(), menu::ramp_name(e.ramp())},
+                      menu_buttons(m));
   } else {
     const char* items[menu::kMaxListItems];
     const size_t n = m.count();
@@ -1120,6 +1161,7 @@ bool menu_action(const menu::Menu& m, menu::Action a, bool verbose) {
       return false;
     case menu::Action::WifiSetup:
       return true;
+    case menu::Action::PlayVolume:  // run_menu plays it after the redraw
     case menu::Action::None:
       return false;
   }
@@ -1159,8 +1201,14 @@ char run_menu(menu::Menu& m, bool verbose) {
       have = false;
     }
     if (have) {
-      setup = menu_action(m, m.handle(in), verbose) || setup;
+      const menu::Action act = m.handle(in);
+      setup = menu_action(m, act, verbose) || setup;
       if (!m.closed()) draw_menu(m);
+      if (act == menu::Action::PlayVolume) {
+        // The new level, at its top loudness (#43). Blocks for the beeps.
+        play_level(m.alarm_edit().volume(), kMenuBeepMs);
+        last_press = millis();
+      }
     }
     if (now - last_press >= menu::kIdleMs) break;  // closes without saving
     if (now - alarm_check >= 1000) {
@@ -1630,8 +1678,9 @@ void print_alarms() {
   const int64_t now = time(nullptr);
   if (g_alarms.empty()) Serial.print("no alarms; add one with `alarm add 07:00 weekdays Work`\r\n");
   for (const Alarm& a : g_alarms) {
-    Serial.printf("  %u  %02u:%02u  %-14s %-3s  %s", a.id, a.hour, a.minute,
-                  sched::format_days(a.days).c_str(), a.enabled ? "on" : "off", a.label.c_str());
+    Serial.printf("  %u  %02u:%02u  %-14s %-3s  vol %2u %-6s  %s", a.id, a.hour, a.minute,
+                  sched::format_days(a.days).c_str(), a.enabled ? "on" : "off", a.volume,
+                  a.ramp ? "rising" : "steady", a.label.c_str());
     if (const auto f = g_rtc.time_set ? sched::next_fire(a, g_zone, now) : std::nullopt) {
       print_stamp("   next", static_cast<time_t>(*f));
     }
@@ -1674,8 +1723,12 @@ void print_alarm_usage() {
       "mon-fri\r\n"
       "  alarm time ID HH:MM | alarm days ID DAYS | alarm label ID [TEXT]\r\n"
       "  alarm on ID | alarm off ID | alarm del ID\r\n"
+      "  alarm volume ID 1-10       loudness (8 = default, 10 = loudest)\r\n"
+      "  alarm ramp ID on|off       on: starts quieter and rises to the level; off: steady\r\n"
+      "  alarm beep 1-10            play that level for a few seconds (nothing saved)\r\n"
       "  alarm skip                 skip the next ring, or undo (same as a BOOT tap)\r\n"
-      "  alarm test                 ring now (tap KEY = snooze, hold 2 s = stop)\r\n"
+      "  alarm test [ID]            ring now, as alarm ID would (tap KEY = snooze, hold 2 s = "
+      "stop)\r\n"
       "  alarm stop                 end a snooze\r\n");
 }
 
@@ -1689,8 +1742,26 @@ void handle_alarm(const String& line) {
     return;
   }
   if (verb == "test") {
-    ring_trigger(g_rtc.ring, kTestAlarmId, time(nullptr));
+    uint8_t id = kTestAlarmId;
+    if (n > 2) {
+      const long want = w[2].toInt();
+      if (want <= 0 || want > 255 || !sched::find(v, static_cast<uint8_t>(want))) {
+        Serial.print("no alarm with that ID; `alarm` lists them\r\n");
+        return;
+      }
+      id = static_cast<uint8_t>(want);
+    }
+    ring_trigger(g_rtc.ring, id, time(nullptr));
     ring_loop();
+    return;
+  }
+  if (verb == "beep") {
+    uint8_t level = 0;
+    if (n < 3 || !parse_volume(w[2].c_str(), level)) {
+      Serial.print("volume 1-10, e.g. `alarm beep 5` (1 quietest, 8 default, 10 loudest)\r\n");
+      return;
+    }
+    if (!play_level(level, kTestBeepMs)) Serial.print("no sound: speaker codec did not answer\r\n");
     return;
   }
   if (verb == "skip") {
@@ -1739,7 +1810,7 @@ void handle_alarm(const String& line) {
     const auto i = id > 0 && id < 256 ? sched::find(v, static_cast<uint8_t>(id)) : std::nullopt;
     if (!i) {
       if (verb == "on" || verb == "off" || verb == "del" || verb == "time" || verb == "days" ||
-          verb == "label") {
+          verb == "label" || verb == "volume" || verb == "ramp") {
         Serial.print("no alarm with that ID; `alarm` lists them\r\n");
       } else {
         print_alarm_usage();
@@ -1766,6 +1837,18 @@ void handle_alarm(const String& line) {
       a.enabled = true;
     } else if (verb == "label") {
       a.label = arg.c_str();
+    } else if (verb == "volume") {
+      if (!parse_volume(arg.c_str(), a.volume)) {
+        Serial.print(
+            "volume 1-10, e.g. `alarm volume 1 5` (1 quietest, 8 default, 10 loudest)\r\n");
+        return;
+      }
+    } else if (verb == "ramp") {
+      if (arg != "on" && arg != "off") {
+        Serial.print("ramp on (starts quieter, rises to the volume) or off (steady)\r\n");
+        return;
+      }
+      a.ramp = arg == "on";
     } else {
       print_alarm_usage();
       return;

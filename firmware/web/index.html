@@ -96,6 +96,12 @@ button.secondary{background:none;color:var(--ink);border:1px solid var(--line);m
     <div class="days" id="aDays"></div>
     <label for="aLabel">Label</label>
     <input id="aLabel" maxlength="23" autocomplete="off" placeholder="Work">
+    <label for="aVol">Volume (1 quietest, 10 loudest)</label>
+    <div class="pair" style="align-items:center">
+      <select id="aVol" style="flex:1"></select>
+      <button id="aTest" type="button" class="link" style="width:auto;margin-top:0">Test</button>
+    </div>
+    <label style="display:flex;gap:8px;align-items:center"><input id="aRamp" type="checkbox" style="width:auto" checked> Rising: starts quieter, gets louder up to the volume</label>
     <label style="display:flex;gap:8px;align-items:center"><input id="aOn" type="checkbox" style="width:auto" checked> On</label>
     <div class="pair">
       <button id="aSave" type="button">Save alarm</button>
@@ -368,7 +374,8 @@ function showAlarms() {
     l1.textContent = a.label || "Alarm";
     const l2 = document.createElement("div");
     l2.className = "sub";
-    l2.textContent = daysText(a) + (a.on && a.next ? " \u00b7 next " + a.next : a.on ? "" : " \u00b7 off");
+    l2.textContent = daysText(a) + (a.on && a.next ? " \u00b7 next " + a.next : a.on ? "" : " \u00b7 off") +
+                     " \u00b7 volume " + a.volume;
     d.append(l1, l2);
     const tog = document.createElement("button");
     tog.type = "button";
@@ -390,6 +397,8 @@ function openEditor(a) {
   $("aTime").value = a ? a.time : "07:00";
   $("aLabel").value = a ? a.label : "";
   $("aOn").checked = a ? a.on : true;
+  $("aVol").value = String(a ? a.volume : 8);
+  $("aRamp").checked = a ? a.ramp : true;
   const mask = a ? a.mask : 31;
   document.querySelectorAll("#aDays input").forEach((cb, i) => { cb.checked = !!(mask & (1 << i)); });
   $("aDel").classList.toggle("hidden", !a);
@@ -410,11 +419,11 @@ async function loadAlarms() {
 }
 
 // The clock applies an edit on its own task: wait until its list changes.
-async function sendAlarm(form) {
-  alarmStatus("Saving...");
+async function sendAlarm(form, busy = "Saving...", done = "Saved.") {
+  alarmStatus(busy);
   try {
     const sent = await api("/api/alarms", form);
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
       await new Promise(res => setTimeout(res, 250));
       const r = await api("/api/alarms").catch(() => null);
       if (!r || r.rev === sent.rev) continue;
@@ -422,7 +431,7 @@ async function sendAlarm(form) {
       alarmRev = r.rev;
       showAlarms();
       if (r.error) { alarmStatus(r.error, "bad"); return false; }
-      alarmStatus("Saved.", "ok");
+      alarmStatus(done, "ok");
       return true;
     }
     alarmStatus("No answer from the clock. Look at its screen.", "bad");
@@ -437,9 +446,17 @@ async function saveAlarm() {
   if (!/^\d{2}:\d{2}$/.test(time)) { alarmStatus("Pick a time.", "bad"); return; }
   const picked = DAYS.filter((d, i) => document.querySelectorAll("#aDays input")[i].checked);
   const form = {op: editing ? "save" : "add", time: time, days: picked.length ? picked.join(",") : "once",
-                label: $("aLabel").value.trim(), on: $("aOn").checked ? "1" : "0"};
+                label: $("aLabel").value.trim(), on: $("aOn").checked ? "1" : "0",
+                volume: $("aVol").value, ramp: $("aRamp").checked ? "1" : "0"};
   if (editing) form.id = editing.id;
   if (await sendAlarm(form)) closeEditor();
+}
+
+// Plays the chosen volume on the clock for a few seconds; nothing is saved.
+async function testVolume() {
+  $("aTest").disabled = true;
+  await sendAlarm({op: "test", volume: $("aVol").value}, "Playing on the clock...", "Played. Not saved yet.");
+  $("aTest").disabled = false;
 }
 
 async function deleteAlarm() {
@@ -456,6 +473,8 @@ function initAlarms() {
     lab.append(cb, d[0].toUpperCase() + d.slice(1, 2));
     box.append(lab);
   });
+  for (let v = 1; v <= 10; v++) $("aVol").add(new Option(v === 8 ? "8 (default)" : String(v), String(v)));
+  $("aTest").onclick = testVolume;
   $("addAlarm").onclick = () => openEditor(null);
   $("aSave").onclick = saveAlarm;
   $("aDel").onclick = deleteAlarm;

@@ -70,10 +70,20 @@ RingEvent ring_tick(Ringer& r, const RingConfig& c, int64_t now) {
   return RingEvent::None;
 }
 
-uint8_t ring_volume(uint32_t elapsed_s, uint8_t start_pct, uint8_t max_pct) {
-  // +5 % every 20 s.
-  const uint32_t v = start_pct + (elapsed_s / 20) * 5;
-  return static_cast<uint8_t>(v > max_pct ? max_pct : v);
+uint8_t volume_pct(uint8_t level) {
+  if (level < kMinVolume) level = kMinVolume;
+  if (level > kMaxVolume) level = kMaxVolume;
+  return static_cast<uint8_t>(50 + 5 * level);
+}
+
+uint8_t ring_volume(uint32_t elapsed_s, uint8_t level, bool ramp) {
+  const uint32_t top = volume_pct(level);
+  if (!ramp) return static_cast<uint8_t>(top);
+  // From 40 % below the top, +5 % every 20 s (the steps cap first, so a long
+  // ring cannot overflow).
+  const uint32_t steps = elapsed_s / 20;
+  const uint32_t v = top - 40 + (steps > 8 ? 8 : steps) * 5;
+  return static_cast<uint8_t>(v > top ? top : v);
 }
 
 bool beep_on(uint32_t ms) {

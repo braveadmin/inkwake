@@ -26,6 +26,8 @@ uint8_t preset_days(DaysPreset p) {
 
 }  // namespace
 
+const char* ramp_name(bool ramp) { return ramp ? "Rising" : "Steady"; }
+
 DaysPreset preset_of(uint8_t days) {
   days &= kEveryDay;
   if (days == kOneShot) return DaysPreset::Once;
@@ -81,15 +83,15 @@ AlarmEdit::AlarmEdit(const Alarm& a)
     : hour_(a.hour % 24),
       minute_(a.minute % 60),
       preset_(preset_of(a.days)),
-      custom_(a.days == kOneShot ? kNewAlarmDays : static_cast<uint8_t>(a.days & kEveryDay)) {}
+      custom_(a.days == kOneShot ? kNewAlarmDays : static_cast<uint8_t>(a.days & kEveryDay)),
+      volume_(a.volume >= kMinVolume && a.volume <= kMaxVolume ? a.volume : kDefaultVolume),
+      ramp_(a.ramp) {}
 
 uint8_t AlarmEdit::days() const {
   return preset_ == DaysPreset::Custom ? custom_ : preset_days(preset_);
 }
 
-bool AlarmEdit::last_field() const {
-  return field_ == (preset_ == DaysPreset::Custom ? AlarmField::Sun : AlarmField::Days);
-}
+bool AlarmEdit::last_field() const { return field_ == AlarmField::Ramp; }
 
 void AlarmEdit::increment() {
   switch (field_) {
@@ -103,6 +105,12 @@ void AlarmEdit::increment() {
       preset_ = static_cast<DaysPreset>((static_cast<int>(preset_) + 1) %
                                         static_cast<int>(DaysPreset::Count));
       break;
+    case AlarmField::Volume:
+      volume_ = static_cast<uint8_t>(volume_ >= kMaxVolume ? kMinVolume : volume_ + 1);
+      break;
+    case AlarmField::Ramp:
+      ramp_ = !ramp_;
+      break;
     default: {
       const int d = static_cast<int>(field_) - static_cast<int>(AlarmField::Mon);
       custom_ = static_cast<uint8_t>(custom_ ^ (1u << d));
@@ -113,7 +121,11 @@ void AlarmEdit::increment() {
 
 bool AlarmEdit::next_field() {
   if (last_field()) return false;
-  field_ = static_cast<AlarmField>(static_cast<int>(field_) + 1);
+  if (field_ == AlarmField::Days && preset_ != DaysPreset::Custom) {
+    field_ = AlarmField::Volume;  // no weekday fields
+  } else {
+    field_ = static_cast<AlarmField>(static_cast<int>(field_) + 1);
+  }
   return true;
 }
 

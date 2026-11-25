@@ -476,6 +476,10 @@ static Alarm alarm(uint8_t id, uint8_t h, uint8_t mi, uint8_t days, bool on = tr
   return a;
 }
 
+static void moves_edit(AlarmEdit& e, int n) {
+  for (int i = 0; i < n; ++i) e.next_field();
+}
+
 static Context alarm_ctx(size_t n) {
   Context c = ctx();
   for (size_t i = 0; i < n; ++i) {
@@ -521,7 +525,7 @@ static void test_alarm_edit_fields() {
   TEST_ASSERT_EQUAL_UINT8(0, e.minute());
   TEST_ASSERT_TRUE(e.next_field());
   TEST_ASSERT_EQUAL(AlarmField::Days, e.field());
-  TEST_ASSERT_TRUE(e.last_field());  // a preset: days is the last field
+  TEST_ASSERT_FALSE(e.sound_page());
   e.increment();
   TEST_ASSERT_EQUAL(DaysPreset::Weekend, e.preset());
   TEST_ASSERT_EQUAL_UINT8(kWeekend, e.days());
@@ -535,6 +539,12 @@ static void test_alarm_edit_fields() {
   for (int d = 0; d < 6; ++d) TEST_ASSERT_TRUE(e.next_field());
   TEST_ASSERT_EQUAL(AlarmField::Sun, e.field());
   e.increment();  // Sunday on
+  TEST_ASSERT_TRUE(e.next_field());
+  TEST_ASSERT_EQUAL(AlarmField::Volume, e.field());
+  TEST_ASSERT_TRUE(e.sound_page());
+  TEST_ASSERT_TRUE(e.next_field());
+  TEST_ASSERT_EQUAL(AlarmField::Ramp, e.field());
+  TEST_ASSERT_TRUE(e.last_field());
   TEST_ASSERT_FALSE(e.next_field());
   TEST_ASSERT_EQUAL_UINT8(TUE | WED | THU | FRI | SUN, e.days());
   // Wraps back to Once.
@@ -545,6 +555,54 @@ static void test_alarm_edit_fields() {
   for (int i = 0; i < static_cast<int>(DaysPreset::Count); ++i) o.increment();
   TEST_ASSERT_EQUAL(DaysPreset::Once, o.preset());
   TEST_ASSERT_EQUAL_UINT8(kOneShot, o.days());
+  // A preset skips the weekdays: days -> volume.
+  TEST_ASSERT_TRUE(o.next_field());
+  TEST_ASSERT_EQUAL(AlarmField::Volume, o.field());
+}
+
+static void test_alarm_edit_volume() {
+  Alarm a = alarm(1, 7, 0, kWeekdays);
+  a.volume = 9;
+  a.ramp = false;
+  AlarmEdit e(a);
+  TEST_ASSERT_EQUAL_UINT8(9, e.volume());
+  TEST_ASSERT_FALSE(e.ramp());
+  moves_edit(e, 3);  // hour, minute, days -> volume
+  TEST_ASSERT_EQUAL(AlarmField::Volume, e.field());
+  e.increment();
+  TEST_ASSERT_EQUAL_UINT8(10, e.volume());
+  e.increment();  // wraps to 1, never 0
+  TEST_ASSERT_EQUAL_UINT8(kMinVolume, e.volume());
+  e.next_field();
+  e.increment();
+  TEST_ASSERT_TRUE(e.ramp());
+  TEST_ASSERT_EQUAL_STRING("Rising", ramp_name(true));
+  TEST_ASSERT_EQUAL_STRING("Steady", ramp_name(false));
+  // A bad stored level starts from the default.
+  a.volume = 0;
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, AlarmEdit(a).volume());
+}
+
+static void test_alarm_volume_in_menu() {
+  Menu m;
+  open_alarms(m, alarm_ctx(1));
+  m.handle(Input::Act);
+  m.handle(Input::Act);  // Edit
+  moves(m, 3);
+  TEST_ASSERT_EQUAL(AlarmField::Volume, m.alarm_edit().field());
+  TEST_ASSERT_EQUAL_STRING("+1", m.boot_label());
+  TEST_ASSERT_FALSE(m.repeats());  // each press beeps
+  TEST_ASSERT_EQUAL(Action::PlayVolume, m.handle(Input::Act));
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume + 1, m.alarm_edit().volume());
+  m.handle(Input::Move);
+  TEST_ASSERT_EQUAL(AlarmField::Ramp, m.alarm_edit().field());
+  TEST_ASSERT_EQUAL_STRING("Change", m.boot_label());
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));  // steady
+  m.handle(Input::Move);
+  TEST_ASSERT_EQUAL(EditorButton::Save, m.editor_button());
+  TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume + 1, m.alarms()[0].volume);
+  TEST_ASSERT_FALSE(m.alarms()[0].ramp);
 }
 
 static void test_alarm_add_defaults() {
@@ -565,7 +623,7 @@ static void test_alarm_add_defaults() {
   TEST_ASSERT_EQUAL(AlarmField::Days, m.alarm_edit().field());
   TEST_ASSERT_EQUAL_STRING("Change", m.boot_label());
   TEST_ASSERT_FALSE(m.repeats());
-  m.handle(Input::Move);
+  moves(m, 3);  // volume, ramp, Save
   TEST_ASSERT_EQUAL(EditorButton::Save, m.editor_button());
   TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
   TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
@@ -576,6 +634,8 @@ static void test_alarm_add_defaults() {
   TEST_ASSERT_EQUAL_UINT8(kWeekdays, a.days);
   TEST_ASSERT_TRUE(a.enabled);
   TEST_ASSERT_TRUE(a.label.empty());
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, a.volume);
+  TEST_ASSERT_TRUE(a.ramp);
   TEST_ASSERT_EQUAL(0, m.selected());  // on the new alarm
   TEST_ASSERT_EQUAL_STRING("08:00 Mon-Fri", m.item(0));
 }
@@ -586,7 +646,7 @@ static void test_alarm_add_cancel_saves_nothing() {
   moves(m, 2);
   m.handle(Input::Act);  // Add alarm
   m.handle(Input::Act);
-  moves(m, 4);  // hour, minute, days, Save -> Cancel
+  moves(m, 6);  // hour, minute, days, volume, ramp, Save -> Cancel
   TEST_ASSERT_EQUAL(EditorButton::Cancel, m.editor_button());
   TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));
   TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
@@ -630,7 +690,7 @@ static void test_alarm_edit_keeps_id_and_label() {
   m.handle(Input::Act);  // 06:31
   m.handle(Input::Move);
   m.handle(Input::Act);  // Weekend
-  m.handle(Input::Move);
+  moves(m, 3);           // volume, ramp, Save
   TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
   const Alarm& a = m.alarms()[1];
   TEST_ASSERT_EQUAL_UINT8(2, a.id);
@@ -654,7 +714,7 @@ static void test_alarm_custom_days_in_menu() {
   TEST_ASSERT_EQUAL_STRING("On/off", m.boot_label());
   TEST_ASSERT_FALSE(m.repeats());
   m.handle(Input::Act);  // Monday off
-  moves(m, 7);           // Tue .. Sun, then Save
+  moves(m, 9);           // Tue .. Sun, volume, ramp, then Save
   TEST_ASSERT_EQUAL(EditorButton::Save, m.editor_button());
   TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
   TEST_ASSERT_EQUAL_UINT8(TUE | WED | THU | FRI, m.alarms()[0].days);
@@ -670,7 +730,7 @@ static void test_alarm_edit_back_keeps_alarm() {
   TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
   TEST_ASSERT_EQUAL_UINT8(6, m.alarms()[0].hour);
   m.handle(Input::Act);  // Edit again: Cancel
-  moves(m, 4);
+  moves(m, 6);
   TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));
   TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
 }
@@ -828,6 +888,8 @@ int main() {
   RUN_TEST(test_text_fits_screen);
   RUN_TEST(test_days_presets_and_text);
   RUN_TEST(test_alarm_edit_fields);
+  RUN_TEST(test_alarm_edit_volume);
+  RUN_TEST(test_alarm_volume_in_menu);
   RUN_TEST(test_alarm_add_defaults);
   RUN_TEST(test_alarm_add_cancel_saves_nothing);
   RUN_TEST(test_alarm_full_hides_add);

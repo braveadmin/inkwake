@@ -63,7 +63,8 @@ void render_datetime(Framebuffer& fb, const char* title, const DateTimeView& v,
 Rect datetime_field_rect(int field);
 
 // Values of the alarm editor (#55). `field`: 0 hour, 1 minute, 2 days preset,
-// 3-9 Monday .. Sunday (only while the preset is Custom).
+// 3-9 Monday .. Sunday (only while the preset is Custom), 10 volume, 11 ramp
+// (#43, on the second page, which also shows while Save or Cancel is marked).
 struct AlarmEditView {
   int hour;
   int minute;
@@ -71,12 +72,20 @@ struct AlarmEditView {
   uint8_t mask;      // days the alarm rings, bit 0 = Monday
   int field;         // -1 = none (`button` is marked)
   int button;        // 0, kEditorSave or kEditorCancel
+  int volume;        // 1-10
+  const char* ramp;  // "Rising" or "Steady"
 };
+constexpr int kAlarmFieldVolume = 10;
+constexpr int kAlarmFieldRamp = 11;
+// True when render_alarm_edit draws the second page (volume and ramp).
+bool alarm_sound_page(const AlarmEditView& v);
 
 // Clears the framebuffer and draws `title`, "07:00" in large digits, the days
 // preset under it, a row of the seven days (filled = rings that day), Save and
 // Cancel, and the button labels. The field being changed is marked: hour, minute and preset
-// white on black, a day with a bar under it.
+// white on black, a day with a bar under it. The second page shows the volume
+// in large digits over a row of ten cells (filled up to the level) and
+// "Rising" or "Steady" instead of the time and days.
 void render_alarm_edit(Framebuffer& fb, const char* title, const AlarmEditView& v,
                        const ButtonLabels& buttons);
 

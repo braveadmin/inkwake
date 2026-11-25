@@ -7,8 +7,9 @@
 // instead. --menu SCREEN draws a button menu screen (#41): main, tz, custom
 // (timezone list with a custom zone), wifi, forget, first (first start), date0 .. date6 (the
 // date & time editor with field 0-4, Save (5) or Cancel (6) marked), alarms (#55: list),
-// alarm (one alarm), delete (its confirmation), add (new alarm) or alarm0 .. alarm11 (the
-// editor on a custom-days alarm with field 0-9, Save (10) or Cancel (11) marked).
+// alarm (one alarm), delete (its confirmation), add (new alarm) or alarm0 .. alarm13 (the
+// editor on a custom-days alarm with field 0-9, volume (10), ramp (11), Save (12) or
+// Cancel (13) marked).
 //
 //   gcc -c lib/qrcodegen/src/qrcodegen.c -o qrcodegen.o
 //   g++ -std=c++17 -Ilib/display/src -Ilib/qrcodegen/src -Ilib/menu/src -Ilib/tz/src
@@ -107,11 +108,11 @@ static void draw_menu(Framebuffer& fb, const char* name) {
   if (m.screen() == menu::Screen::AlarmEdit) {
     const menu::AlarmEdit& e = m.alarm_edit();
     const bool on_button = m.editor_button() != menu::EditorButton::None;
-    render_alarm_edit(
-        fb, m.title(),
-        {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
-         on_button ? -1 : static_cast<int>(e.field()), static_cast<int>(m.editor_button())},
-        {m.key_label(), m.key_hold_label(), m.boot_label()});
+    render_alarm_edit(fb, m.title(),
+                      {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
+                       on_button ? -1 : static_cast<int>(e.field()),
+                       static_cast<int>(m.editor_button()), e.volume(), menu::ramp_name(e.ramp())},
+                      {m.key_label(), m.key_hold_label(), m.boot_label()});
     return;
   }
   const char* items[menu::kMaxListItems];

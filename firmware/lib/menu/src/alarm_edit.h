@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Alarm editor values for the button menu (#55): hour, minute, a days preset,
-// and with "Custom" each weekday on or off. Same +1-with-wrap idea as the date
-// & time editor.
+// and with "Custom" each weekday on or off; then (#43) the volume level and
+// rising or steady. Same +1-with-wrap idea as the date & time editor.
 #pragma once
 
 #include <cstddef>
@@ -25,8 +25,25 @@ void format_days_short(uint8_t days, char* buf, size_t n);
 // One alarm list row: "07:00 Mon-Fri", " off" appended while it is off.
 void format_alarm_row(const Alarm& a, char* buf, size_t n);
 
-// Fields: hour, minute, days preset; with Custom, then Monday .. Sunday.
-enum class AlarmField : uint8_t { Hour, Minute, Days, Mon, Tue, Wed, Thu, Fri, Sat, Sun };
+// Fields: hour, minute, days preset; with Custom, then Monday .. Sunday; then
+// volume and ramp (the editor's second page).
+enum class AlarmField : uint8_t {
+  Hour,
+  Minute,
+  Days,
+  Mon,
+  Tue,
+  Wed,
+  Thu,
+  Fri,
+  Sat,
+  Sun,
+  Volume,
+  Ramp,
+};
+
+// "Rising" (starts quiet, gets louder) or "Steady" (full level at once).
+const char* ramp_name(bool ramp);
 
 // Default for an alarm added with the buttons (decided 2026-11-25).
 constexpr uint8_t kNewAlarmHour = 7;
@@ -42,10 +59,15 @@ class AlarmEdit {
   uint8_t minute() const { return minute_; }
   DaysPreset preset() const { return preset_; }
   uint8_t days() const;  // the mask to save
+  uint8_t volume() const { return volume_; }
+  bool ramp() const { return ramp_; }
   AlarmField field() const { return field_; }
+  // Volume and ramp sit on the editor's second page.
+  bool sound_page() const { return field_ >= AlarmField::Volume; }
   bool last_field() const;
 
-  // BOOT: +1 on the field (wraps), next preset, or a weekday on/off.
+  // BOOT: +1 on the field (wraps; volume 10 -> 1), next preset, a weekday
+  // on/off, or rising <-> steady.
   void increment();
   // KEY tap: on to the next field. False on the last field (KEY then marks Save).
   bool next_field();
@@ -57,6 +79,8 @@ class AlarmEdit {
   uint8_t minute_ = kNewAlarmMinute;
   DaysPreset preset_ = DaysPreset::Weekdays;
   uint8_t custom_ = kNewAlarmDays;  // days while Custom; starts from the alarm's own days
+  uint8_t volume_ = kDefaultVolume;
+  bool ramp_ = true;
   AlarmField field_ = AlarmField::Hour;
 };
 
