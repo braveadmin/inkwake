@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "pcf85063.h"
 
+#include <cmath>
+
 namespace inkwake::pcf85063 {
 
 namespace {
@@ -75,6 +77,39 @@ bool encode(int64_t unix_seconds, uint8_t regs[kTimeRegs]) {
   regs[5] = to_bcd(month);
   regs[6] = to_bcd(static_cast<unsigned>(year - 2000));
   return true;
+}
+
+uint8_t encode_offset(int steps) {
+  if (steps < kOffsetMin) steps = kOffsetMin;
+  if (steps > kOffsetMax) steps = kOffsetMax;
+  return static_cast<uint8_t>(steps) & 0x7F;  // MODE = 0
+}
+
+int decode_offset(uint8_t reg) {
+  int v = reg & 0x7F;
+  if (v & 0x40) v -= 0x80;
+  if (reg & 0x80) {  // mode 1: 4.069 ppm per step
+    const double ppm = v * 4.069;
+    return static_cast<int>(std::lround(ppm / kOffsetStepPpm));
+  }
+  return v;
+}
+
+bool trim_offset(int current, int64_t rtc_error_us, int64_t elapsed_s, int& next) {
+  next = current;
+  if (elapsed_s < kTrimMinSpanS) return false;
+  // Microseconds per second = ppm. Positive: the RTC ran fast.
+  const double ppm = static_cast<double>(rtc_error_us) / static_cast<double>(elapsed_s);
+  if (std::fabs(ppm) > kTrimMaxPpm) return false;
+  const double steps = ppm / kOffsetStepPpm;
+  if (std::fabs(steps) < kTrimDeadband) return false;
+  long delta = std::lround(steps);
+  if (delta == 0) delta = steps > 0 ? 1 : -1;
+  long n = current + delta;
+  if (n < kOffsetMin) n = kOffsetMin;
+  if (n > kOffsetMax) n = kOffsetMax;
+  next = static_cast<int>(n);
+  return next != current;
 }
 
 }  // namespace inkwake::pcf85063

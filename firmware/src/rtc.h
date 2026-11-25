@@ -26,4 +26,10 @@ bool write(time_t t);
 // run before every deep sleep: INT stays low until this is written.
 bool arm_minute_interrupt();
 
+// Drift trim (#13) in mode-0 steps of 4.34 ppm, positive slows the clock. The
+// register resets to 0 when the chip loses power, so it is written on every
+// power-on and reset from the value saved in NVS.
+bool set_offset(int steps);
+bool read_offset(int& steps);
+
 }  // namespace inkwake::rtc

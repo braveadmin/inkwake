@@ -30,8 +30,12 @@
 // with a growing delay (lib/ntp), sooner while the time is not set. Without
 // Wi-Fi the clock just keeps running from the RTC.
 //
-// Wi-Fi setup (#20, ADR-0016): at power-on with no network saved, on KEY held
-// 5 s, or `setup` over serial, the clock opens the open network inkwake-XXXX
+// First start (#34, ADR-0018): with no time and no network saved, power-on
+// opens the timezone list and then the date & time editor (KEY held 5 s there
+// opens Wi-Fi setup instead).
+//
+// Wi-Fi setup (#20, ADR-0016): on KEY held 5 s, from the button menu, or
+// `setup` over serial, the clock opens the open network inkwake-XXXX
 // with a captive settings page and shows a QR code that joins it. Setup ends
 // when a network connects (then NTP syncs at once), after 10 min without page
 // activity, or on a KEY press. A failed sync later only shows a small Wi-Fi "!"
@@ -49,6 +53,19 @@
 // KEY held 2 s = stop; 10 min unattended = auto-snooze, gives up after the
 // third snooze. A snooze sleeps with a timer that ends it on time. The next
 // alarm (or the snooze end) shows on the bottom line of the face.
+//
+// Button menu (#41, ADR-0018): KEY held 2 s on the face opens a menu drawn on
+// the panel (date & time, alarms, timezone, Wi-Fi), worked with KEY and BOOT,
+// so the clock can be set with no Wi-Fi and no serial. While the face shows
+// "Time not set", a KEY tap opens the date & time editor. The menu closes
+// without saving after 60 s without a press. Alarms edited there (#55) go to
+// the same NVS blob as serial `alarm` and the setup page.
+//
+// BOOT on the face (#55): a tap skips the next ring of the next alarm, or
+// undoes the skip; the face then shows a crossed-out bell. BOOT also wakes the
+// board from deep sleep (ext1, with KEY and the RTC interrupt). It is a
+// strapping pin, but the chip latches strapping pins only at a chip reset, not
+// on a deep-sleep wake.
 #include <Arduino.h>
 #include <Preferences.h>
 #include <driver/gpio.h>
@@ -56,6 +73,7 @@
 #include <esp_sleep.h>
 #include <sys/time.h>
 
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -68,10 +86,14 @@
 #include "alarm_sched.h"
 #include "audio.h"
 #include "battery.h"
+#include "button.h"
 #include "clock_face.h"
 #include "framebuffer.h"
+#include "menu.h"
+#include "menu_screen.h"
 #include "ntp.h"
 #include "ntp_sync.h"
+#include "pcf85063.h"
 #include "portal.h"
 #include "provision.h"
 #include "qrcodegen.h"
@@ -81,16 +103,18 @@
 #include "shtc3.h"
 #include "st7305.h"
 #include "tz.h"
+#include "tz_presets.h"
 #include "wifi_list.h"
 
 using namespace inkwake;
 
 namespace {
 
-constexpr int kKeyPin = 18;                   // active low, external pull-up; wakes from deep sleep
-constexpr int kAmpPin = 46;                   // speaker amp enable, held low in sleep
-constexpr int kBatPin = 4;                    // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E0020;       // changed with the RtcState layout
+constexpr int kKeyPin = 18;  // active low, external pull-up; wakes from deep sleep
+constexpr int kBootPin = 0;  // active low, external pull-up; wakes from deep sleep (#55)
+constexpr int kAmpPin = 46;  // speaker amp enable, held low in sleep
+constexpr int kBatPin = 4;   // battery sense, 1:3 divider
+constexpr uint32_t kMagic = 0x1A7E0022;       // changed with the RtcState layout
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -107,7 +131,7 @@ constexpr uint64_t kUnsetFallbackUs = 70'000'000;
 // over serial (`log`).
 struct WakeEntry {
   uint32_t when;      // system time after the RTC sync (Unix, UTC)
-  char cause;         // R = RTC interrupt, T = fallback timer, K = KEY, P = power-on
+  char cause;         // R = RTC interrupt, T = fallback timer, K = KEY, B = BOOT, P = power-on
   uint8_t rtc;        // rtc::Status of the sync
   uint8_t regions;    // regions redrawn, kFullRefresh / kReinit
   char ntp_result;    // 0 = no sync on this wake, else ntp_sync::status_letter()
@@ -126,20 +150,24 @@ constexpr uint8_t kReinit = 0xFE;  // panel reset + init + full frame
 constexpr uint8_t kDefaultReinitMin = 60;
 constexpr St7305::WriteMode kDefaultPanelMode = St7305::WriteMode::LowPower;
 constexpr uint32_t kTempPeriodMs = 60'000;      // while awake on USB
-constexpr uint32_t kKeyHoldMs = 5'000;          // KEY held this long opens Wi-Fi setup
 constexpr uint32_t kSetupIdleMs = 10 * 60'000;  // setup closes after this without page activity
 constexpr char kPrefsNamespace[] = "inkwake";
-constexpr char kPrefTempOffset[] = "temp_off";               // int16, tenths of a degree C
-constexpr char kPrefTz[] = "tz";                             // POSIX TZ string
-constexpr size_t kTzLen = 64;                                // including the terminating NUL
-constexpr char kDefaultTz[] = "CET-1CEST,M3.5.0,M10.5.0/3";  // Central Europe
-constexpr char kPrefWifiList[] = "wifi_list";                // blob, provision::encode (#33)
+constexpr char kPrefTempOffset[] = "temp_off";  // int16, tenths of a degree C
+constexpr char kPrefTz[] = "tz";                // POSIX TZ string
+constexpr size_t kTzLen = 64;                   // including the terminating NUL
+using menu::kDefaultTz;                         // Central Europe
+constexpr char kPrefWifiList[] = "wifi_list";   // blob, provision::encode (#33)
 // Single network saved by firmware before #33: moved into the list on first load.
 constexpr char kPrefWifiSsid[] = "wifi_ssid";
 constexpr char kPrefWifiPass[] = "wifi_pass";
 constexpr char kPrefNtpServer[] = "ntp_server";
 constexpr char kPrefNtpHours[] = "ntp_hours";  // uint16
 constexpr char kDefaultNtpServer[] = "pool.ntp.org";
+constexpr char kPrefRtcOffset[] = "rtc_offset";  // int8, PCF85063 offset steps (#13)
+// A sync measures the RTC's drift only if the system clock was copied from the
+// RTC this recently: while awake the system clock runs on the ESP32's own
+// crystal, which drifts on its own.
+constexpr uint32_t kTrimFreshMs = 15 * 60'000;
 constexpr uint16_t kDefaultNtpHours = 24;  // crystal drift ~2 s/day at most; ADR-0013
 constexpr uint16_t kMaxNtpHours = 168;
 constexpr size_t kSsidLen = 33;  // 32 + NUL
@@ -192,7 +220,15 @@ struct RtcState {
   uint8_t alarm_blob[kAlarmBlobMax];
   int64_t alarm_checked;  // UTC up to which due alarms were handled; 0 = not yet
   Ringer ring;            // plain data, all-zero = idle
+  // RTC drift trim (#13).
+  int8_t rtc_offset;      // offset register steps in force, copy of the NVS value
+  int64_t trim_base;      // UTC of the last sync that set the RTC exactly; 0 = none
+  int32_t drift_ppm_x10;  // last measured drift, + = RTC fast; kNoDrift = none yet
+  int64_t drift_at;       // UTC of that measurement
+  // BOOT skip (#55): this ring of this alarm is skipped; id 0 = none.
+  sched::Skip skip;
 };
+constexpr int32_t kNoDrift = INT32_MIN;
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
 // wake, resetting `shown` (magic survives) so each wake redrew every field.
@@ -228,7 +264,9 @@ FaceState current_face() {
       s.alarm = FaceState::kAlarmSnoozed;
     } else if (const auto u = sched::upcoming(g_alarms, g_zone, now)) {
       at = u->fire_utc;
-      s.alarm = FaceState::kAlarmNext;
+      const bool skipped =
+          g_alarms[u->index].id == g_rtc.skip.id && u->fire_utc == g_rtc.skip.fire_utc;
+      s.alarm = skipped ? FaceState::kAlarmSkipped : FaceState::kAlarmNext;
     }
     if (s.alarm != FaceState::kAlarmNone) {
       const tz::Civil c = tz::to_civil(g_zone, at);
@@ -313,14 +351,22 @@ void set_system_clock(time_t t) {
   settimeofday(&tv, nullptr);
 }
 
+// millis() when the system clock was copied from the RTC right at a second
+// edge (minute-interrupt wake), 0 = not on this boot. Other reads land
+// anywhere in the second, up to 1 s off: too coarse to measure drift.
+uint32_t g_clock_from_rtc_ms = 0;
+
 // Copies the RTC time into the system clock. On a minute-interrupt wake the
 // RTC has just turned the minute, so the lost fraction of a second is tiny.
 // No answer on I2C keeps the system clock and the previous time_set.
 rtc::Status sync_from_rtc() {
   time_t t;
   const rtc::Status s = rtc::read(t);
-  if (s == rtc::Status::Ok) set_system_clock(t);
+  if (s == rtc::Status::Ok) {
+    set_system_clock(t);
+  }
   if (s != rtc::Status::NoDevice) g_rtc.time_set = s == rtc::Status::Ok;
+  if (s == rtc::Status::TimeLost) g_rtc.trim_base = 0;
   return s;
 }
 
@@ -335,13 +381,16 @@ time_t make_time(int year, int mon, int day, int hour, int min, int sec) {
   return mktime(&t);  // TZ unset in newlib: fields taken as they are, no zone applied
 }
 
-// Sets both the system clock and the RTC.
-void set_clock(time_t now) {
+// Sets both the system clock and the RTC. False if the RTC write failed.
+bool set_clock(time_t now) {
   set_system_clock(now);
   g_rtc.time_set = true;
   g_rtc.alarm_checked = 0;  // a jump in time rings nothing it skipped over
+  g_rtc.trim_base = 0;      // set by hand: not exact enough to measure drift from
   // Fails if the RTC is missing, or within ~2 s of power-up while its crystal starts.
-  if (!rtc::write(now)) Serial.print("RTC write failed: try `set` again\r\n");
+  if (rtc::write(now)) return true;
+  Serial.print("RTC write failed: try `set` again\r\n");
+  return false;
 }
 
 // __DATE__ is "Nov 18 2026", __TIME__ is "12:34:56". Gives the system clock a
@@ -429,6 +478,45 @@ void load_ntp_config() {
   g_rtc.ntp_hours = h >= 1 && h <= kMaxNtpHours ? h : kDefaultNtpHours;
 }
 
+int8_t load_rtc_offset() {
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, true)) return 0;
+  const int8_t v = prefs.getChar(kPrefRtcOffset, 0);
+  prefs.end();
+  return v >= pcf85063::kOffsetMin && v <= pcf85063::kOffsetMax ? v : 0;
+}
+
+// Writes the offset to the chip and NVS. The drift measured so far was taken
+// with the old value, so measuring starts again at the next sync.
+bool set_rtc_offset(int steps) {
+  g_rtc.trim_base = 0;
+  if (!rtc::set_offset(steps)) return false;
+  g_rtc.rtc_offset = static_cast<int8_t>(steps);
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, false)) return false;
+  const bool ok = prefs.putChar(kPrefRtcOffset, static_cast<int8_t>(steps)) == 1;
+  prefs.end();
+  return ok;
+}
+
+// After a good sync, before the time is corrected: compares the RTC with NTP
+// time since the previous exact sync and trims the offset register if it drifted.
+void measure_drift(int64_t ntp_offset_us) {
+  const int64_t now = time(nullptr);
+  if (g_rtc.trim_base == 0 || g_clock_from_rtc_ms == 0 ||
+      millis() - g_clock_from_rtc_ms > kTrimFreshMs || now <= g_rtc.trim_base) {
+    return;
+  }
+  const int64_t elapsed = now - g_rtc.trim_base;
+  const int64_t rtc_error_us = -ntp_offset_us;  // the sync adds offset: RTC was ahead by -offset
+  if (elapsed >= pcf85063::kTrimMinSpanS) {
+    g_rtc.drift_ppm_x10 = static_cast<int32_t>(rtc_error_us * 10 / elapsed);
+    g_rtc.drift_at = now;
+  }
+  int next;
+  if (pcf85063::trim_offset(g_rtc.rtc_offset, rtc_error_us, elapsed, next)) set_rtc_offset(next);
+}
+
 int64_t ntp_interval_s() {
   const uint16_t h = g_rtc.ntp_hours != 0 ? g_rtc.ntp_hours : kDefaultNtpHours;
   return static_cast<int64_t>(h) * 3600;
@@ -468,7 +556,9 @@ char run_ntp_sync() {
   memset(&nets, 0, sizeof nets);
   bool ok = r.status == ntp_sync::Status::Ok;
   if (ok) {
+    measure_drift(r.offset_us);
     ok = apply_ntp_offset(r.offset_us);
+    g_rtc.trim_base = ok ? time(nullptr) : 0;
     g_rtc.ntp_offset_ms = static_cast<int32_t>(r.offset_us / 1000);
     g_rtc.ntp_rtt_ms = static_cast<uint16_t>(r.rtt_us / 1000);
   }
@@ -595,6 +685,9 @@ bool int_needs_pullup() {
   // KEY has an external pull-up, so no RTC pull-up for it (that keeps RTC
   // peripherals powered). INT only gets one if the board has none.
   uint64_t mask = 1ULL << kKeyPin;
+  // BOOT (#55), also with an external pull-up. Left out while held down, or it
+  // would wake the board again at once.
+  if (digitalRead(kBootPin) == HIGH) mask |= 1ULL << kBootPin;
   if (armed) {
     mask |= 1ULL << rtc::kIntPin;
     if (g_rtc.int_pullup) {
@@ -608,6 +701,8 @@ bool int_needs_pullup() {
 }
 
 // ---- Alarms (#2) ----
+
+void print_stamp(const char* label, time_t when);
 
 void use_alarms(const std::vector<Alarm>& v) {
   const std::vector<uint8_t> b = sched::encode(v);
@@ -649,6 +744,48 @@ bool save_alarms(const std::vector<Alarm>& v) {
   return ok;
 }
 
+// Clears the BOOT skip once its ring time has come (a skipped one-shot alarm
+// then turns off, as if it had rung) or once the alarm was moved, turned off
+// or deleted.
+void update_skip(int64_t now) {
+  switch (sched::skip_state(g_alarms, g_zone, g_rtc.skip, now)) {
+    case sched::SkipState::Passed:
+      if (const auto i = sched::find(g_alarms, g_rtc.skip.id)) {
+        if (g_alarms[*i].days == kOneShot) {
+          std::vector<Alarm> v = g_alarms;
+          v[*i].enabled = false;
+          save_alarms(v);
+        }
+      }
+      g_rtc.skip = {};
+      break;
+    case sched::SkipState::Stale:
+      g_rtc.skip = {};
+      break;
+    case sched::SkipState::None:
+    case sched::SkipState::Pending:
+      break;
+  }
+}
+
+// BOOT tap on the face: skips the next alarm's next ring, or undoes the skip,
+// and redraws. Nothing while the time is not set or an alarm rings or snoozes.
+void toggle_skip(bool verbose) {
+  if (!g_rtc.time_set || g_rtc.ring.state != RingState::Idle) return;
+  const int64_t now = time(nullptr);
+  update_skip(now);
+  g_rtc.skip = sched::toggle_skip(g_alarms, g_zone, g_rtc.skip, now);
+  if (verbose) {
+    if (g_rtc.skip.id != 0) {
+      print_stamp("skipping the ring at", static_cast<time_t>(g_rtc.skip.fire_utc));
+      Serial.print(" (BOOT again or `alarm skip` undoes it)\r\n");
+    } else {
+      Serial.print(g_alarms.empty() ? "no alarm to skip\r\n" : "next alarm rings as usual\r\n");
+    }
+  }
+  if (current_face() != g_rtc.shown) update_display(false);
+}
+
 // Starts an alarm that came due since the last check, or rings again after a
 // snooze. Returns the log letter (A, S) or 0.
 char check_alarms() {
@@ -661,7 +798,7 @@ char check_alarms() {
   const int64_t prev = g_rtc.alarm_checked;
   if (prev == 0 || now > prev) g_rtc.alarm_checked = now;
   if (prev != 0 && now > prev) {
-    if (const auto d = sched::due(g_alarms, g_zone, prev, now)) {
+    if (const auto d = sched::due(g_alarms, g_zone, prev, now, g_rtc.skip)) {
       Alarm& a = g_alarms[d->index];
       ring_trigger(g_rtc.ring, a.id, now);
       letter = 'A';
@@ -672,6 +809,7 @@ char check_alarms() {
       }
     }
   }
+  update_skip(now);
   if (ring_tick(g_rtc.ring, kDefaultRing, now) == RingEvent::Restart) letter = 'S';
   return letter;
 }
@@ -746,6 +884,8 @@ char handle_alarms() {
 // ---- Wi-Fi setup (#20) ----
 
 void ntp_sync_soon();
+void print_time();
+void print_alarms();
 
 void show_setup(portal::Screen screen, const char* ap, const char* ssid) {
   switch (screen) {
@@ -869,15 +1009,6 @@ const portal::Hooks kSetupHooks = {show_setup,        setup_load,      setup_app
                                    setup_offer_time,  save_networks,   setup_cancel,
                                    setup_alarms_json, setup_alarm_edit};
 
-// True if KEY stays down until `until_ms` after boot.
-bool key_held_until(uint32_t until_ms) {
-  while (digitalRead(kKeyPin) == LOW) {
-    if (millis() >= until_ms) return true;
-    delay(10);
-  }
-  return false;
-}
-
 // Runs setup mode, then syncs if a network was set and redraws the face.
 // Returns the NTP log letter (0 if no sync ran).
 char run_setup(bool verbose) {
@@ -900,6 +1031,206 @@ char run_setup(bool verbose) {
   return letter;
 }
 
+// ---- Button menu (#41, ADR-0018) ----
+
+bool key_down() { return digitalRead(kKeyPin) == LOW; }
+bool boot_down() { return digitalRead(kBootPin) == LOW; }
+
+menu::Context menu_context() {
+  // While the time is not set this is the build time: a start near the real date.
+  const tz::Civil c = tz::to_civil(g_zone, time(nullptr));
+  menu::Context ctx;
+  ctx.now = menu::clamped({c.year, c.month, c.day, c.hour, c.minute});
+  ctx.tz_preset = menu::find_tz_preset(g_rtc.tz);
+  ctx.wifi_saved = g_rtc.wifi_configured;
+  ctx.alarms = g_alarms;
+  return ctx;
+}
+
+ButtonLabels menu_buttons(const menu::Menu& m) {
+  return {m.key_label(), m.key_hold_label(), m.boot_label()};
+}
+
+// The marked editor field, or -1 while Save or Cancel is marked.
+int editor_field(const menu::Menu& m, int field) {
+  return m.editor_button() == menu::EditorButton::None ? field : -1;
+}
+
+void draw_menu(const menu::Menu& m) {
+  if (m.screen() == menu::Screen::DateTime) {
+    const menu::DateTime& v = m.value();
+    render_datetime(
+        g_fb, m.title(),
+        {v.year, v.month, v.day, v.hour, v.minute, editor_field(m, static_cast<int>(m.field())),
+         static_cast<int>(m.editor_button())},
+        menu_buttons(m));
+  } else if (m.screen() == menu::Screen::AlarmEdit) {
+    const menu::AlarmEdit& e = m.alarm_edit();
+    render_alarm_edit(
+        g_fb, m.title(),
+        {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
+         editor_field(m, static_cast<int>(e.field())), static_cast<int>(m.editor_button())},
+        menu_buttons(m));
+  } else {
+    const char* items[menu::kMaxListItems];
+    const size_t n = m.count();
+    for (size_t i = 0; i < n; ++i) items[i] = m.item(i);
+    render_list(g_fb, m.title(), items, n, m.selected(), menu_buttons(m));
+  }
+  g_lcd.refresh_full(g_fb);
+}
+
+// A short message, shown for a moment before the next screen.
+void show_note(const char* line1, const char* line2) {
+  render_message(g_fb, line1, line2);
+  g_lcd.refresh_full(g_fb);
+  delay(1500);
+}
+
+// Local wall clock -> UTC, as `set`: in the hour skipped in spring the time
+// moves an hour on, in the repeated autumn hour the first one wins. Seconds 0.
+bool menu_set_time(const menu::DateTime& v) {
+  return set_clock(static_cast<time_t>(
+      tz::to_utc(g_zone, make_time(v.year, v.month, v.day, v.hour, v.minute, 0))));
+}
+
+// Carries out what the menu asked for. True if Wi-Fi setup was chosen.
+bool menu_action(const menu::Menu& m, menu::Action a, bool verbose) {
+  switch (a) {
+    case menu::Action::SaveDateTime:
+      if (!menu_set_time(m.value())) show_note("Time not saved", "RTC did not answer");
+      if (verbose) print_time();
+      return false;
+    case menu::Action::SaveTimezone:
+      if (!use_tz(menu::kTzPresets[m.tz_choice()].posix)) return false;
+      if (!save_tz(g_rtc.tz)) show_note("Timezone set", "but lost at power-off");
+      if (verbose) Serial.printf("tz %s\r\n", g_rtc.tz);
+      return false;
+    case menu::Action::WifiForget: {
+      provision::WifiList none{};
+      const bool ok = save_networks(none);
+      show_note(ok ? "Wi-Fi networks" : "Could not forget", ok ? "forgotten" : "the networks");
+      if (verbose) Serial.print("all Wi-Fi networks forgotten; NTP is off\r\n");
+      return false;
+    }
+    case menu::Action::SaveAlarms:
+      if (!save_alarms(m.alarms())) show_note("Alarms set", "but lost at power-off");
+      update_skip(time(nullptr));
+      if (verbose) print_alarms();
+      return false;
+    case menu::Action::WifiSetup:
+      return true;
+    case menu::Action::None:
+      return false;
+  }
+  return false;
+}
+
+// Runs the menu until it closes, 60 s pass without a press, or an alarm comes
+// due, then redraws the face (or opens Wi-Fi setup, if chosen). Called with
+// KEY up. Returns the NTP log letter of a sync after Wi-Fi setup, or 0.
+char run_menu(menu::Menu& m, bool verbose) {
+  menu::Button key({m.back_hold_ms(), 0, 0});
+  menu::Button boot({0, menu::kRepeatDelayMs, menu::kRepeatMs});
+  if (boot_down()) {
+    boot.pressed_since(millis());
+    boot.ignore_until_release();
+  }
+  draw_menu(m);
+  uint32_t last_press = millis();
+  uint32_t alarm_check = millis();
+  bool setup = false;
+  while (!m.closed()) {
+    const uint32_t now = millis();
+    const menu::Gesture k = key.update(key_down(), now);
+    const menu::Gesture b = boot.update(boot_down(), now);
+    if (k != menu::Gesture::None || b != menu::Gesture::None) last_press = now;
+    // KEY moves the mark, BOOT acts on it (#55); BOOT held repeats only on
+    // values (+1), never on Open, Save or a day on/off.
+    menu::Input in = menu::Input::Move;
+    bool have = true;
+    if (k == menu::Gesture::Tap) {
+      in = menu::Input::Move;
+    } else if (k == menu::Gesture::Hold) {
+      in = menu::Input::Back;
+    } else if (b == menu::Gesture::Press || (b == menu::Gesture::Repeat && m.repeats())) {
+      in = menu::Input::Act;
+    } else {
+      have = false;
+    }
+    if (have) {
+      setup = menu_action(m, m.handle(in), verbose) || setup;
+      if (!m.closed()) draw_menu(m);
+    }
+    if (now - last_press >= menu::kIdleMs) break;  // closes without saving
+    if (now - alarm_check >= 1000) {
+      alarm_check = now;
+      check_alarms();
+      if (g_rtc.ring.state == RingState::Ringing) break;
+    }
+    delay(10);
+  }
+  while (key_down()) delay(10);  // the hold that closed it is no new face gesture
+  if (setup) return run_setup(verbose);
+  update_display(true);
+  if (g_rtc.ring.state == RingState::Ringing) ring_loop();
+  return 0;
+}
+
+// Sets the time with the buttons while it is not set: with no network saved
+// (first start, #34) the timezone list comes first and KEY held 5 s opens
+// Wi-Fi setup; otherwise only the date & time editor. `welcome` shows a
+// greeting first (power-on). Returns the NTP log letter after Wi-Fi setup, or 0.
+char run_set_time(bool welcome, bool verbose) {
+  menu::Menu m;
+  if (g_rtc.wifi_configured) {
+    m.open_datetime(menu_context());
+  } else {
+    if (welcome) show_note("Welcome to inkwake", "Let's set the clock");
+    m.open_first_time(menu_context());
+  }
+  return run_menu(m, verbose);
+}
+
+// KEY went down at `since_ms` with the face shown; waits for what it means:
+//   tap:  the date & time editor while the time is not set, else nothing
+//   2 s:  stops a snoozed alarm (ADR-0017); otherwise shows "Menu" and opens
+//         the menu on release
+//   5 s:  Wi-Fi setup
+// Returns the NTP log letter of a sync after Wi-Fi setup, or 0.
+char handle_face_key(uint32_t since_ms, bool verbose) {
+  menu::Button key({menu::kMenuHoldMs, 0, 0});
+  key.pressed_since(since_ms);
+  bool stopped = false;
+  for (;;) {
+    const uint32_t now = millis();
+    const menu::Gesture g = key.update(key_down(), now);
+    if (g == menu::Gesture::Tap) {
+      if (g_rtc.time_set) return 0;
+      return run_set_time(false, verbose);
+    }
+    if (g == menu::Gesture::Hold) {
+      if (g_rtc.ring.state == RingState::Snoozed) {
+        ring_dismiss(g_rtc.ring);
+        update_display(false);
+        stopped = true;
+        if (verbose) Serial.print("alarm stopped\r\n");
+      } else {
+        render_message(g_fb, "Menu", "Keep holding for Wi-Fi setup");
+        g_lcd.refresh_full(g_fb);
+      }
+    }
+    if (g == menu::Gesture::Release) {
+      if (stopped) return 0;
+      menu::Menu m;
+      m.open(menu_context());
+      return run_menu(m, verbose);
+    }
+    if (key_down() && key.held_ms(now) >= menu::kSetupHoldMs) return run_setup(verbose);
+    delay(10);
+  }
+}
+
 void print_help() {
   Serial.print(
       "\r\ninkwake clock (M3)\r\n"
@@ -908,6 +1239,8 @@ void print_help() {
       "  rtc                    RTC time and wake counters\r\n"
       "  alarm                  list alarms; `alarm help` for add, edit, test\r\n"
       "  setup                  Wi-Fi setup page (same as holding KEY 5 s)\r\n"
+      "  (KEY held 2 s opens the button menu: date & time, alarms, timezone, Wi-Fi;\r\n"
+      "   BOOT on the face skips the next alarm's ring, BOOT again undoes it)\r\n"
       "  wifi                   saved Wi-Fi networks (up to 5), in the order they are tried\r\n"
       "  wifi ssid NAME         start adding a network (spaces allowed), then:\r\n"
       "  wifi pass PASSWORD     its password (empty for an open network); saves it first, syncs\r\n"
@@ -953,6 +1286,37 @@ void print_time() {
   Serial.print("\r\n");
 }
 
+// x10 value as "-1.5"
+void fmt_tenths(char* buf, size_t n, int32_t v) {
+  snprintf(buf, n, "%s%ld.%ld", v < 0 ? "-" : "", static_cast<long>((v < 0 ? -v : v) / 10),
+           static_cast<long>((v < 0 ? -v : v) % 10));
+}
+
+void print_drift() {
+  int chip = 0;
+  const bool read_ok = rtc::read_offset(chip);
+  Serial.printf("offset %d steps (%s %.1f ppm)", g_rtc.rtc_offset,
+                g_rtc.rtc_offset >= 0 ? "slows by" : "speeds up by",
+                (g_rtc.rtc_offset >= 0 ? 1 : -1) * g_rtc.rtc_offset * pcf85063::kOffsetStepPpm);
+  if (!read_ok) {
+    Serial.print(", chip not readable");
+  } else if (chip != g_rtc.rtc_offset) {
+    Serial.printf(", chip has %d", chip);
+  }
+  Serial.print("\r\n");
+  if (g_rtc.drift_ppm_x10 != kNoDrift) {
+    char ppm[16];
+    fmt_tenths(ppm, sizeof ppm, g_rtc.drift_ppm_x10);
+    const int32_t ms_day =
+        static_cast<int32_t>(static_cast<int64_t>(g_rtc.drift_ppm_x10) * 864 / 100);
+    print_stamp("drift measured", static_cast<time_t>(g_rtc.drift_at));
+    Serial.printf(": %s ppm (%ld ms/day, + = fast)\r\n", ppm, static_cast<long>(ms_day));
+  } else {
+    Serial.print(
+        "drift: not measured yet (needs two NTP syncs at least 12 h apart on battery)\r\n");
+  }
+}
+
 void print_rtc() {
   time_t t = 0;
   const rtc::Status s = rtc::read(t);
@@ -963,6 +1327,7 @@ void print_rtc() {
     Serial.printf("rtc  %s\r\n", rtc::status_name(s));
   }
   print_time();
+  print_drift();
   Serial.printf(
       "wakes %lu: rtc interrupt %lu, fallback timer %lu, rtc read errors %lu\r\n"
       "GPIO15 (RTC INT): %s\r\n",
@@ -975,7 +1340,7 @@ void print_rtc() {
 void print_log() {
   const uint32_t n = g_rtc.log_count < kLogLen ? g_rtc.log_count : kLogLen;
   Serial.printf(
-      "last %lu of %lu wakes (R rtc, T timer, K key, P power-on), battery now %u mV\r\n"
+      "last %lu of %lu wakes (R rtc, T timer, K key, B boot, P power-on), battery now %u mV\r\n"
       "ntp column: + synced, W no Wi-Fi, D DNS, N no reply, B bad reply, X RTC write failed\r\n"
       "alarm column: A alarm rang, S snooze ended\r\n",
       static_cast<unsigned long>(n), static_cast<unsigned long>(g_rtc.log_count), battery_mv());
@@ -1272,6 +1637,10 @@ void print_alarms() {
     }
     Serial.print("\r\n");
   }
+  if (g_rtc.skip.id != 0) {
+    print_stamp("skipped (BOOT): the ring of alarm", static_cast<time_t>(g_rtc.skip.fire_utc));
+    Serial.printf(" (alarm %u; `alarm skip` undoes it)\r\n", g_rtc.skip.id);
+  }
   if (g_rtc.ring.state == RingState::Snoozed) {
     print_stamp("snoozed until", static_cast<time_t>(g_rtc.ring.resume_at));
     Serial.printf(" (snooze %u of %u; `alarm stop` ends it)\r\n", g_rtc.ring.snoozes,
@@ -1305,6 +1674,7 @@ void print_alarm_usage() {
       "mon-fri\r\n"
       "  alarm time ID HH:MM | alarm days ID DAYS | alarm label ID [TEXT]\r\n"
       "  alarm on ID | alarm off ID | alarm del ID\r\n"
+      "  alarm skip                 skip the next ring, or undo (same as a BOOT tap)\r\n"
       "  alarm test                 ring now (tap KEY = snooze, hold 2 s = stop)\r\n"
       "  alarm stop                 end a snooze\r\n");
 }
@@ -1321,6 +1691,16 @@ void handle_alarm(const String& line) {
   if (verb == "test") {
     ring_trigger(g_rtc.ring, kTestAlarmId, time(nullptr));
     ring_loop();
+    return;
+  }
+  if (verb == "skip") {
+    if (!g_rtc.time_set) {
+      Serial.print("time not set: nothing rings, nothing to skip\r\n");
+    } else if (g_rtc.ring.state != RingState::Idle) {
+      Serial.print("an alarm is ringing or snoozed: `alarm stop` ends it\r\n");
+    } else {
+      toggle_skip(true);
+    }
     return;
   }
   if (verb == "stop") {
@@ -1413,6 +1793,20 @@ void handle_line(const String& line) {
     update_display(true);
   } else if (line == "rtc") {
     print_rtc();
+  } else if (line == "rtc offset" || line.startsWith("rtc offset ")) {
+    String arg = line.substring(10);
+    arg.trim();
+    int n;
+    char extra;
+    if (arg.length() > 0) {
+      if (sscanf(arg.c_str(), "%d %c", &n, &extra) != 1 || n < pcf85063::kOffsetMin ||
+          n > pcf85063::kOffsetMax) {
+        Serial.print("rtc offset takes -64 to 63 steps of 4.34 ppm, + slows the clock\r\n");
+        return;
+      }
+      if (!set_rtc_offset(n)) Serial.print("could not write the offset\r\n");
+    }
+    print_drift();
   } else if (line == "alarm" || line == "alarms" || line.startsWith("alarm ")) {
     handle_alarm(line == "alarms" ? String("alarm") : line);
   } else if (line == "tz" || line.startsWith("tz ")) {
@@ -1505,6 +1899,7 @@ void setup() {
   pinMode(kAmpPin, OUTPUT);
   digitalWrite(kAmpPin, LOW);
   pinMode(kKeyPin, INPUT);
+  pinMode(kBootPin, INPUT);
 
   g_lcd.set_write_mode(static_cast<St7305::WriteMode>(g_rtc.panel_mode));
   rtc::begin();
@@ -1513,6 +1908,7 @@ void setup() {
 
   const uint64_t ext1 = cause == ESP_SLEEP_WAKEUP_EXT1 ? esp_sleep_get_ext1_wakeup_status() : 0;
   const bool key = ext1 & (1ULL << kKeyPin);
+  const bool boot = !key && (ext1 & (1ULL << kBootPin));  // KEY wins if both
   const bool woke =
       (cause == ESP_SLEEP_WAKEUP_TIMER || cause == ESP_SLEEP_WAKEUP_EXT1) && g_rtc.magic == kMagic;
   rtc::Status rtc_status = rtc::Status::Ok;
@@ -1524,10 +1920,13 @@ void setup() {
     if (cause == ESP_SLEEP_WAKEUP_TIMER) g_rtc.timer_wakes++;
     rtc_status = sync_from_rtc();
     if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
+    if (rtc_status == rtc::Status::Ok && (ext1 & (1ULL << rtc::kIntPin))) {
+      g_clock_from_rtc_ms = millis() | 1;  // | 1: never 0
+    }
     finish_temp(temp_started);
     measure_battery();
     const bool reinit =
-        !key && g_rtc.reinit_min != 0 && current_face().minute % g_rtc.reinit_min == 0;
+        !key && !boot && g_rtc.reinit_min != 0 && current_face().minute % g_rtc.reinit_min == 0;
     if (!key) g_lcd.set_wait(nap);  // KEY wakes may stay awake on USB: plain delay()
     g_lcd.begin(false);
     uint8_t regions;
@@ -1541,24 +1940,29 @@ void setup() {
     // Logged before ringing, so the entry has this wake's time and awake_ms.
     const char alarm_letter = check_alarms();
     log_wake(key                               ? 'K'
+             : boot                            ? 'B'
              : cause == ESP_SLEEP_WAKEUP_TIMER ? 'T'
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
                                                : '?',
              rtc_status, regions, 0, alarm_letter);
-    if (g_rtc.ring.state == RingState::Ringing) ring_loop();
+    // A KEY press that woke the board as an alarm came due went to the alarm.
+    const bool rang = g_rtc.ring.state == RingState::Ringing;
+    if (rang) ring_loop();
+    // KEY: tap, menu or Wi-Fi setup, timed from the press that woke the board
+    // (millis() 0), before any NTP sync so the buttons answer at once.
+    char ntp_letter = key && !rang ? handle_face_key(0, false) : 0;
+    // BOOT: skip the next ring (or undo), then sleep; the press is over or
+    // nearly so by now. deep_sleep() leaves BOOT out of the wake pins while held.
+    if (boot && !rang) {
+      toggle_skip(false);
+      for (uint32_t t0 = millis(); digitalRead(kBootPin) == LOW && millis() - t0 < 2000;) delay(10);
+    }
     // After the redraw (and any alarm), so neither waits for Wi-Fi.
-    const char ntp_letter = maybe_ntp_sync();
-    if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
+    if (ntp_letter == 0) {
+      ntp_letter = maybe_ntp_sync();
+      if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
+    }
     g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = ntp_letter;
-    // KEY held 2 s while snoozed: stop the alarm. Holding on to 5 s opens setup.
-    if (key && g_rtc.ring.state == RingState::Snoozed && key_held_until(kDismissHoldMs)) {
-      ring_dismiss(g_rtc.ring);
-      update_display(false);
-    }
-    if (key && key_held_until(kKeyHoldMs)) {
-      const char letter = run_setup(false);
-      if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
-    }
     // Minute tick: back to sleep at once. Looking for a USB host costs time
     // on every wake; to use serial after plugging in, press KEY.
     if (!key) deep_sleep();
@@ -1582,17 +1986,24 @@ void setup() {
     load_tz();
     load_ntp_config();
     load_alarms();
+    // The offset register is lost with power; a reset keeps it, but write it anyway.
+    g_rtc.rtc_offset = load_rtc_offset();
+    g_rtc.drift_ppm_x10 = kNoDrift;
+    rtc::set_offset(g_rtc.rtc_offset);
     finish_temp(temp_started);
     measure_battery();
     rtc_status = sync_from_rtc();
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
     g_lcd.begin(true);
-    update_display(true);
+    // First start (#34): no time and no network saved. The time is set with
+    // the buttons; KEY held 5 s there opens Wi-Fi setup. With a network
+    // saved the boot NTP sync below sets the time instead.
+    const bool first_time = !g_rtc.wifi_configured && !g_rtc.time_set;
+    if (!first_time) update_display(true);
     log_wake('P', rtc_status, kFullRefresh, 0);
-    // First boot (or after `wifi forget`): open setup right away.
-    if (!g_rtc.wifi_configured) {
-      const char letter = run_setup(false);
+    if (first_time) {
+      const char letter = run_set_time(true, false);
       if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
     }
   }
@@ -1647,22 +2058,20 @@ void loop() {
     }
   }
   if (handle_alarms() != 0) print_alarms();
-  // KEY held 2 s while snoozed stops the alarm; held 5 s opens Wi-Fi setup.
-  static uint32_t key_down_ms = 0;
-  if (digitalRead(kKeyPin) == LOW) {
-    if (key_down_ms == 0) key_down_ms = millis() | 1;
-    if (g_rtc.ring.state == RingState::Snoozed && millis() - key_down_ms >= kDismissHoldMs) {
-      ring_dismiss(g_rtc.ring);
-      Serial.print("alarm stopped\r\n");
-      update_display(false);
+  // KEY: menu (2 s), Wi-Fi setup (5 s), stop a snooze (2 s), or the date &
+  // time editor while the time is not set (tap). Two reads apart: no glitch.
+  if (key_down()) {
+    delay(menu::kDebounceMs);
+    if (key_down() && handle_face_key(millis() - menu::kDebounceMs, true) != 0) print_ntp();
+  }
+  // BOOT: skip the next ring or undo it (#55), once per press.
+  if (boot_down()) {
+    delay(menu::kDebounceMs);
+    if (boot_down()) {
+      toggle_skip(true);
+      while (boot_down()) delay(10);
+      delay(menu::kDebounceMs);
     }
-    if (millis() - key_down_ms >= kKeyHoldMs) {
-      run_setup(true);
-      key_down_ms = 0;
-      print_ntp();
-    }
-  } else {
-    key_down_ms = 0;
   }
   static uint32_t last_temp_ms = millis();
   if (millis() - last_temp_ms >= kTempPeriodMs) {

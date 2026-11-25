@@ -9,6 +9,7 @@
 #include "font.h"
 #include "fonts/text30.h"
 #include "framebuffer.h"
+#include "menu_screen.h"
 #include "panel_window.h"
 #include "qrcodegen.h"
 #include "setup_screen.h"
@@ -436,6 +437,13 @@ static void test_alarm_field() {
 
   check_diff_covered(none, wide);
   check_diff_covered(wide, with_alarm(FaceState::kAlarmSnoozed, 7, 9));
+  // BOOT skip (#55): same time, crossed-out bell, still a redraw of the line.
+  const FaceState next = with_alarm(FaceState::kAlarmNext, 7, 0);
+  const FaceState skipped = with_alarm(FaceState::kAlarmSkipped, 7, 0);
+  TEST_ASSERT_EQUAL_UINT32(1, face_dirty(next, skipped, out));
+  check_diff_covered(next, skipped);
+  check_diff_covered(skipped, next);
+  check_diff_covered(none, with_alarm(FaceState::kAlarmSkipped, 23, 58, 2));
   check_diff_covered(with_alarm(FaceState::kAlarmNext, 7, 0),
                      with_alarm(FaceState::kAlarmNext, 6, 45));
   FaceState unset = wide;
@@ -451,6 +459,110 @@ static void test_ringing_screen() {
     for (int x = 0; x < Framebuffer::kWidth; ++x) ink += g_fb.get(x, y);
   }
   TEST_ASSERT_TRUE(ink > 1000);
+}
+
+// ---- button menu screens (#41) ---------------------------------------------------
+
+static void test_list_scrolls_around_selection() {
+  TEST_ASSERT_EQUAL(0, list_first_row(3, 2));
+  TEST_ASSERT_EQUAL(0, list_first_row(11, 0));
+  TEST_ASSERT_EQUAL(0, list_first_row(11, 2));
+  TEST_ASSERT_EQUAL(1, list_first_row(11, 3));
+  TEST_ASSERT_EQUAL(6, list_first_row(11, 8));
+  TEST_ASSERT_EQUAL(6, list_first_row(11, 10));  // the end: no empty rows
+}
+
+static void test_list_marks_selection() {
+  const char* items[] = {"One", "Two", "Three"};
+  render_list(g_fb, "Menu", items, 3, 1, {"Open", "hold: close", "Next"});
+  // Selected row is a black bar: its left margin inside the bar is black, the
+  // rows above and below are white there. Rows start at y 92, 41 px apart.
+  TEST_ASSERT_TRUE(g_fb.get(12, 92 + 41 + 4));
+  TEST_ASSERT_FALSE(g_fb.get(12, 92 + 4));
+  TEST_ASSERT_FALSE(g_fb.get(12, 92 + 2 * 41 + 4));
+  // Arrows point up at KEY and BOOT, none at PWR.
+  TEST_ASSERT_TRUE(g_fb.get(kKeyButtonX, 0));
+  TEST_ASSERT_TRUE(g_fb.get(kBootButtonX, 0));
+  TEST_ASSERT_FALSE(g_fb.get(kPwrButtonX, 0));
+}
+
+static void test_datetime_marks_field() {
+  for (int f = 0; f < 5; ++f) {
+    render_datetime(g_fb, "Date & time", {2026, 11, 25, 14, 7, f, 0}, {"Next", "hold: back", "+1"});
+    for (int g = 0; g < 5; ++g) {
+      const Rect r = datetime_field_rect(g);
+      TEST_ASSERT_FALSE(r.empty());
+      TEST_ASSERT_TRUE(r.x >= 0 && r.y >= 0 && r.x + r.w <= Framebuffer::kWidth &&
+                       r.y + r.h <= Framebuffer::kHeight);
+      // The marked field's corner is black, the others' white.
+      TEST_ASSERT_EQUAL(f == g, g_fb.get(r.x, r.y));
+    }
+  }
+  TEST_ASSERT_TRUE(datetime_field_rect(5).empty());
+}
+
+// Save and Cancel (#55): inside the screen, below every field, filled only when marked.
+static void test_editor_buttons() {
+  const Rect save = editor_button_rect(kEditorSave);
+  const Rect cancel = editor_button_rect(kEditorCancel);
+  TEST_ASSERT_TRUE(editor_button_rect(0).empty());
+  for (const Rect& r : {save, cancel}) {
+    TEST_ASSERT_TRUE(r.x >= 0 && r.x + r.w <= Framebuffer::kWidth &&
+                     r.y + r.h <= Framebuffer::kHeight);
+    TEST_ASSERT_TRUE(r.y > datetime_field_rect(4).y + datetime_field_rect(4).h);
+    const AlarmEditView v{6, 45, "Custom", 0x7F, 0, 0};
+    const Rect day = alarm_field_rect(v, 9);
+    TEST_ASSERT_TRUE(r.y > day.y + day.h);
+  }
+  TEST_ASSERT_TRUE(save.x + save.w < cancel.x);
+  for (int b = 0; b <= 2; ++b) {
+    render_datetime(g_fb, "Date & time", {2026, 11, 25, 14, 7, b == 0 ? 0 : -1, b},
+                    {"Next", "hold: back", "Save"});
+    // Inside each button, left of its text: black only when that one is marked.
+    TEST_ASSERT_EQUAL(b == kEditorSave, g_fb.get(save.x + 5, save.y + save.h / 2));
+    TEST_ASSERT_EQUAL(b == kEditorCancel, g_fb.get(cancel.x + 5, cancel.y + cancel.h / 2));
+    // No field is marked while a button is.
+    for (int g = 0; g < 5; ++g) {
+      const Rect r = datetime_field_rect(g);
+      TEST_ASSERT_EQUAL(b == 0 && g == 0, g_fb.get(r.x, r.y));
+    }
+  }
+}
+
+// ---- alarm editor (#55) -----------------------------------------------------------
+
+static void test_alarm_edit_marks_field() {
+  const uint8_t mask = 0x15;  // Mo We Fr
+  for (int f = 0; f < 10; ++f) {
+    const AlarmEditView v{6, 45, "Custom", mask, f, 0};
+    render_alarm_edit(g_fb, "Edit alarm", v, {"Next", "hold: back", "+1"});
+    for (int g = 0; g < 10; ++g) {
+      const Rect r = alarm_field_rect(v, g);
+      TEST_ASSERT_FALSE(r.empty());
+      TEST_ASSERT_TRUE(r.x >= 0 && r.y >= 0 && r.x + r.w <= Framebuffer::kWidth &&
+                       r.y + r.h <= Framebuffer::kHeight);
+      if (g < 3) {
+        // Hour, minute, preset: the marked one's corner is black.
+        TEST_ASSERT_EQUAL(f == g, g_fb.get(r.x, r.y));
+      } else {
+        // A day: filled when on; the bar under it only while it is being changed.
+        const bool on = (mask >> (g - 3)) & 1;
+        TEST_ASSERT_EQUAL(on, g_fb.get(r.x + r.w / 2, r.y + 4));
+        TEST_ASSERT_EQUAL(f == g, g_fb.get(r.x + r.w / 2, r.y + r.h - 1));
+      }
+    }
+  }
+  // Fields never overlap each other.
+  const AlarmEditView v{6, 45, "Weekend", 0, 0, 0};
+  for (int a = 0; a < 10; ++a) {
+    for (int b = a + 1; b < 10; ++b) {
+      const Rect ra = alarm_field_rect(v, a), rb = alarm_field_rect(v, b);
+      const bool overlap =
+          ra.x < rb.x + rb.w && rb.x < ra.x + ra.w && ra.y < rb.y + rb.h && rb.y < ra.y + ra.h;
+      TEST_ASSERT_FALSE(overlap);
+    }
+  }
+  TEST_ASSERT_TRUE(alarm_field_rect(v, 10).empty());
 }
 
 int main(int, char**) {
@@ -476,5 +588,10 @@ int main(int, char**) {
   RUN_TEST(test_setup_screen);
   RUN_TEST(test_alarm_field);
   RUN_TEST(test_ringing_screen);
+  RUN_TEST(test_list_scrolls_around_selection);
+  RUN_TEST(test_list_marks_selection);
+  RUN_TEST(test_datetime_marks_field);
+  RUN_TEST(test_editor_buttons);
+  RUN_TEST(test_alarm_edit_marks_field);
   return UNITY_END();
 }

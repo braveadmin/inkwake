@@ -23,12 +23,14 @@ struct FaceState {
   bool wifi_failed = false;   // last Wi-Fi sync failed: small Wi-Fi "!" mark top right (#20)
   uint8_t battery = 0;        // 0 ok, 1 low, 2 critical (battery::Level): icon top left (#36)
   // Next alarm on the bottom line, next to the temperature (#2).
-  uint8_t alarm = kAlarmNone;  // kAlarmNone, kAlarmNext (bell + time), kAlarmSnoozed (Zz + time)
-  uint8_t alarm_hour = 0;      // local time it rings (again)
+  // kAlarmNone, kAlarmNext (bell + time), kAlarmSnoozed (Zz + time), kAlarmSkipped
+  // (crossed-out bell + time: BOOT skipped this ring, #55).
+  uint8_t alarm = kAlarmNone;
+  uint8_t alarm_hour = 0;  // local time it rings (again)
   uint8_t alarm_minute = 0;
   uint8_t alarm_weekday = kSoon;  // 0-6 shown as "Mon 07:00" when more than a day away
 
-  static constexpr uint8_t kAlarmNone = 0, kAlarmNext = 1, kAlarmSnoozed = 2;
+  static constexpr uint8_t kAlarmNone = 0, kAlarmNext = 1, kAlarmSnoozed = 2, kAlarmSkipped = 3;
   static constexpr uint8_t kSoon = 0xFF;
 
   bool operator==(const FaceState& o) const {

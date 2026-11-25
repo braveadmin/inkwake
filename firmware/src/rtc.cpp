@@ -74,4 +74,17 @@ bool arm_minute_interrupt() {
   return write_regs(p::kRegControl2, &ctrl2, 1);
 }
 
+bool set_offset(int steps) {
+  const uint8_t reg = p::encode_offset(steps);
+  uint8_t back;
+  return write_regs(p::kRegOffset, &reg, 1) && read_regs(p::kRegOffset, &back, 1) && back == reg;
+}
+
+bool read_offset(int& steps) {
+  uint8_t reg;
+  if (!read_regs(p::kRegOffset, &reg, 1)) return false;
+  steps = p::decode_offset(reg);
+  return true;
+}
+
 }  // namespace inkwake::rtc

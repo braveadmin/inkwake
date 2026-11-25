@@ -9,23 +9,28 @@ only to charge. Alarms work with Wi-Fi down.
 </p>
 
 <p align="center">
-  <img src="docs/img/setup.png" width="260" alt="Wi-Fi setup screen with a QR code to join the clock's setup network">
+  <img src="docs/img/alarm-edit.png" width="260" alt="Alarm editor in the button menu: hour selected, weekday boxes, Save and Cancel">
   <img src="docs/img/ring.png" width="260" alt="Ringing screen: alarm label, time, tap to snooze, hold to stop">
+  <img src="docs/img/setup.png" width="260" alt="Wi-Fi setup screen with a QR code to join the clock's setup network">
 </p>
 
 <sub>Screens rendered on a PC from the firmware's own drawing code (`firmware/tools/preview_face.cpp`).</sub>
 
 ## What it does
 
-Works today ([v0.1.0](https://github.com/braveadmin/inkwake/releases/latest), alpha):
+Works today (alpha, see [releases](https://github.com/braveadmin/inkwake/releases)):
 
 - Clock face with date, room temperature (on-board SHTC3) and the next alarm, updated each minute
   with a partial refresh; the board sleeps in between.
-- Time from the on-board RTC, corrected over NTP once a day; POSIX timezones with DST.
+- Time from the on-board RTC, corrected over NTP once a day, with the crystal's drift trimmed
+  automatically; POSIX timezones with DST.
 - Up to 16 alarms with weekdays and labels, beep through the built-in speaker, snooze 9 min, stop
-  by holding the KEY button. Missed or skipped hours around DST are handled (ADR-0017).
-- Wi-Fi setup from a phone: the clock shows a QR code, you join its setup network and pick your
-  Wi-Fi on a captive page. Up to five networks remembered.
+  by holding the KEY button, skip the next ring with BOOT. Missed or skipped hours around DST are
+  handled (ADR-0017).
+- Everything set with the two buttons: date & time, timezone, alarms, Wi-Fi. No phone or Wi-Fi
+  needed.
+- Optional Wi-Fi setup from a phone: the clock shows a QR code, you join its setup network and pick
+  your Wi-Fi on a captive page. Up to five networks remembered.
 - Low-battery mark on the face; NTP and Wi-Fi skipped when the battery is critical.
 
 Planned for v1.0: touch snooze through the case, ambient wake sounds, sunrise light, web UI and OTA
@@ -53,8 +58,10 @@ a USB-C cable and Chrome or Edge. No toolchain.
    | 0x8000 | `...-partitions.bin` |
    | 0x10000 | the firmware, `inkwake-vX.Y.Z.bin` |
 
-4. Unplug the USB cable and plug it back in. The clock opens its Wi-Fi setup: scan the QR code
-   with a phone.
+4. Unplug the USB cable and plug it back in. The clock asks for the timezone, date and time, set
+   with the two buttons on the top edge (the screen labels them).
+5. Optional: hold KEY 5 s for the Wi-Fi setup and scan the QR code with a phone; the clock then
+   keeps its time with NTP. Later, hold KEY 2 s for the menu.
 
 Updates: flash only the firmware at 0x10000, without Erase (Erase wipes the saved Wi-Fi networks,
 timezone and alarms). Serial console (115200 baud): https://googlechromelabs.github.io/serial-terminal/,
@@ -62,7 +69,7 @@ type `help`.
 
 ## Help without the board
 
-Most of the logic (time zones, alarm scheduling, NTP, Wi-Fi list, display layout) lives in
+Most of the logic (time zones, alarm scheduling, button menu, NTP, Wi-Fi list, display layout) lives in
 `firmware/lib/` and is tested on a PC, so you can contribute without the hardware:
 
 ```bash
