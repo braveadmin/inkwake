@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #include "framebuffer.h"
 
@@ -54,5 +55,25 @@ void render_datetime(Framebuffer& fb, const char* title, const DateTimeView& v,
 
 // Screen area of a field in render_datetime, including its black mark. For tests.
 Rect datetime_field_rect(int field);
+
+// Values of the alarm editor (#55). `field`: 0 hour, 1 minute, 2 days preset,
+// 3-9 Monday .. Sunday (only while the preset is Custom).
+struct AlarmEditView {
+  int hour;
+  int minute;
+  const char* days;  // preset name: "Mon-Fri", "Custom", ...
+  uint8_t mask;      // days the alarm rings, bit 0 = Monday
+  int field;
+};
+
+// Clears the framebuffer and draws `title`, "07:00" in large digits, the days
+// preset under it, a row of the seven days (filled = rings that day), and the
+// button labels. The field being changed is marked: hour, minute and preset
+// white on black, a day with a bar under it.
+void render_alarm_edit(Framebuffer& fb, const char* title, const AlarmEditView& v,
+                       const ButtonLabels& buttons);
+
+// Screen area of a field in render_alarm_edit, including its mark. For tests.
+Rect alarm_field_rect(const AlarmEditView& v, int field);
 
 }  // namespace inkwake

@@ -3,8 +3,12 @@
 // button press does there. Pure state: main.cpp turns presses into Inputs,
 // draws the screen and carries out the returned Action.
 //
-//   Main list:   Date & time, Timezone, Wi-Fi
+//   Main list:   Date & time, Alarms, Timezone, Wi-Fi
 //   Date & time: year, month, day, hour, minute; the last field saves
+//   Alarms:      one row per alarm, then "Add alarm" (hidden at kMaxAlarms)
+//   Alarm:       Edit, Turn off / Turn on, Delete
+//   Alarm editor: hour, minute, days (+ Mon..Sun with Custom); the last field saves
+//   Delete:      Cancel, Delete  (confirmation, Cancel first)
 //   Timezone:    preset list (plus "Custom" while a zone not in it is set)
 //   Wi-Fi:       Set up Wi-Fi, Forget all networks (only with one saved)
 //   Forget:      Cancel, Forget all  (confirmation, Cancel first)
@@ -15,9 +19,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
+#include "alarm.h"
+#include "alarm_edit.h"
+#include "alarm_sched.h"
 #include "button.h"
 #include "datetime.h"
+#include "tz_presets.h"
 
 namespace inkwake::menu {
 
@@ -27,7 +36,23 @@ enum class Input : uint8_t {
   Back,    // KEY held: back without saving
 };
 
-enum class Screen : uint8_t { Closed, Main, DateTime, Timezone, Wifi, WifiForget };
+enum class Screen : uint8_t {
+  Closed,
+  Main,
+  DateTime,
+  Timezone,
+  Wifi,
+  WifiForget,
+  Alarms,
+  AlarmItem,
+  AlarmEdit,
+  AlarmDelete,
+};
+
+// Longest list: the timezones (plus "Custom") or the alarms (plus "Add alarm").
+constexpr size_t kMaxListItems =
+    kTzPresetCount + 1 > sched::kMaxAlarms + 1 ? kTzPresetCount + 1 : sched::kMaxAlarms + 1;
+constexpr size_t kItemLen = 32;  // alarm rows and titles, including the NUL
 
 enum class Action : uint8_t {
   None,          // redraw if the screen changed
@@ -35,12 +60,14 @@ enum class Action : uint8_t {
   SaveTimezone,  // tz_choice() is the preset to save
   WifiSetup,     // open the Wi-Fi setup page; the menu is closed
   WifiForget,    // forget all networks; the menu is back on the main list
+  SaveAlarms,    // alarms() is the whole list to save (added, edited, toggled or deleted)
 };
 
 struct Context {
   DateTime now;        // editor start value, local time
   int tz_preset = -1;  // current zone: index into kTzPresets, -1 = custom
   bool wifi_saved = false;
+  std::vector<Alarm> alarms;  // as saved; the menu edits a copy
 };
 
 class Menu {
@@ -80,9 +107,17 @@ class Menu {
   // After SaveTimezone: index into kTzPresets.
   size_t tz_choice() const { return tz_choice_; }
 
+  // Alarm editor.
+  const AlarmEdit& alarm_edit() const { return edit_; }
+  // After SaveAlarms: the list to save.
+  const std::vector<Alarm>& alarms() const { return ctx_.alarms; }
+
  private:
   void show(Screen s, size_t sel);
   bool has_custom() const { return ctx_.tz_preset < 0; }
+  bool can_add() const { return ctx_.alarms.size() < sched::kMaxAlarms; }
+  Action handle_alarms(Input in);
+  Action save_edit();
 
   Context ctx_;
   Screen screen_ = Screen::Closed;
@@ -93,6 +128,11 @@ class Menu {
   bool datetime_alone_ = false;
   bool first_time_ = false;
   size_t tz_choice_ = 0;
+  size_t alarm_ = 0;     // alarm open in AlarmItem / AlarmEdit / AlarmDelete
+  bool adding_ = false;  // AlarmEdit on a new alarm
+  AlarmEdit edit_;
+  mutable char row_[kMaxListItems][kItemLen] = {};  // formatted alarm rows
+  mutable char title_[kItemLen] = {};
 };
 
 }  // namespace inkwake::menu

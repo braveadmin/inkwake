@@ -226,11 +226,11 @@ static void test_main_list_wraps_and_closes() {
   Menu m;
   m.open(ctx());
   TEST_ASSERT_EQUAL(Screen::Main, m.screen());
-  TEST_ASSERT_EQUAL(3, m.count());
+  TEST_ASSERT_EQUAL(4, m.count());
   TEST_ASSERT_EQUAL_STRING("Date & time", m.item(0));
-  m.handle(Input::Next);
-  m.handle(Input::Next);
-  TEST_ASSERT_EQUAL(2, m.selected());
+  TEST_ASSERT_EQUAL_STRING("Alarms", m.item(1));
+  for (int i = 0; i < 3; ++i) m.handle(Input::Next);
+  TEST_ASSERT_EQUAL(3, m.selected());
   m.handle(Input::Next);
   TEST_ASSERT_EQUAL(0, m.selected());
   m.handle(Input::Back);
@@ -283,6 +283,7 @@ static void test_timezone_pick() {
   Menu m;
   m.open(ctx(0));
   m.handle(Input::Next);
+  m.handle(Input::Next);
   m.handle(Input::Select);
   TEST_ASSERT_EQUAL(Screen::Timezone, m.screen());
   TEST_ASSERT_EQUAL(kTzPresetCount, m.count());
@@ -292,7 +293,7 @@ static void test_timezone_pick() {
   TEST_ASSERT_EQUAL(Action::SaveTimezone, m.handle(Input::Select));
   TEST_ASSERT_EQUAL(1, m.tz_choice());
   TEST_ASSERT_EQUAL(Screen::Main, m.screen());
-  TEST_ASSERT_EQUAL(1, m.selected());  // back on "Timezone"
+  TEST_ASSERT_EQUAL(2, m.selected());  // back on "Timezone"
   m.handle(Input::Select);
   TEST_ASSERT_EQUAL(1, m.selected());                        // shows the new zone
   TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Select));  // same zone: nothing to save
@@ -301,6 +302,7 @@ static void test_timezone_pick() {
 static void test_timezone_custom() {
   Menu m;
   m.open(ctx(-1));
+  m.handle(Input::Next);
   m.handle(Input::Next);
   m.handle(Input::Select);
   TEST_ASSERT_EQUAL(kTzPresetCount + 1, m.count());
@@ -320,8 +322,7 @@ static void test_timezone_custom() {
 static void test_wifi_setup() {
   Menu m;
   m.open(ctx(0, false));
-  m.handle(Input::Next);
-  m.handle(Input::Next);
+  for (int i = 0; i < 3; ++i) m.handle(Input::Next);
   m.handle(Input::Select);
   TEST_ASSERT_EQUAL(Screen::Wifi, m.screen());
   TEST_ASSERT_EQUAL(1, m.count());  // nothing saved: no "Forget all"
@@ -334,8 +335,7 @@ static void test_wifi_setup() {
 static void test_wifi_forget_needs_confirmation() {
   Menu m;
   m.open(ctx(0, true));
-  m.handle(Input::Next);
-  m.handle(Input::Next);
+  for (int i = 0; i < 3; ++i) m.handle(Input::Next);
   m.handle(Input::Select);
   TEST_ASSERT_EQUAL(2, m.count());
   m.handle(Input::Next);
@@ -351,7 +351,7 @@ static void test_wifi_forget_needs_confirmation() {
   m.handle(Input::Next);
   TEST_ASSERT_EQUAL(Action::WifiForget, m.handle(Input::Select));
   TEST_ASSERT_EQUAL(Screen::Main, m.screen());
-  TEST_ASSERT_EQUAL(2, m.selected());
+  TEST_ASSERT_EQUAL(3, m.selected());
   m.handle(Input::Select);
   TEST_ASSERT_EQUAL(1, m.count());  // nothing left to forget
 }
@@ -378,7 +378,7 @@ static void test_text_fits_screen() {
   Menu m;
   m.open(ctx(-1, true));
   check_fits(m);
-  for (int item = 0; item < 3; ++item) {
+  for (int item = 0; item < 4; ++item) {
     m.open(ctx(-1, true));
     for (int k = 0; k < item; ++k) m.handle(Input::Next);
     m.handle(Input::Select);
@@ -401,6 +401,255 @@ static void test_text_fits_screen() {
   for (int f = 0; f < kFieldCount; ++f) {
     check_fits(m);
     if (f + 1 < kFieldCount) m.handle(Input::Select);
+  }
+}
+
+// ---- alarms (#55) -------------------------------------------------------------------
+
+static Alarm alarm(uint8_t id, uint8_t h, uint8_t mi, uint8_t days, bool on = true) {
+  Alarm a;
+  a.id = id;
+  a.hour = h;
+  a.minute = mi;
+  a.days = days;
+  a.enabled = on;
+  return a;
+}
+
+static Context alarm_ctx(size_t n) {
+  Context c = ctx();
+  for (size_t i = 0; i < n; ++i)
+    c.alarms.push_back(alarm(static_cast<uint8_t>(i + 1), 6, 30, kWeekdays));
+  return c;
+}
+
+static void open_alarms(Menu& m, const Context& c) {
+  m.open(c);
+  m.handle(Input::Next);
+  m.handle(Input::Select);
+  TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
+}
+
+static void test_days_presets_and_text() {
+  TEST_ASSERT_EQUAL(DaysPreset::Once, preset_of(kOneShot));
+  TEST_ASSERT_EQUAL(DaysPreset::Daily, preset_of(kEveryDay));
+  TEST_ASSERT_EQUAL(DaysPreset::Weekdays, preset_of(kWeekdays));
+  TEST_ASSERT_EQUAL(DaysPreset::Weekend, preset_of(kWeekend));
+  TEST_ASSERT_EQUAL(DaysPreset::Custom, preset_of(MON | WED));
+  char buf[24];
+  format_days_short(kWeekdays, buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("Mon-Fri", buf);
+  format_days_short(MON | WED | FRI, buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("Mo We Fr", buf);
+  format_days_short(TUE | WED | THU | SUN, buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("Tu-Th Su", buf);
+  format_days_short(SAT | MON | TUE, buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("Mo Tu Sa", buf);
+  format_days_short(kEveryDay & ~WED, buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("Mo Tu Th-Su", buf);
+  format_alarm_row(alarm(1, 7, 5, kWeekend, false), buf, sizeof buf);
+  TEST_ASSERT_EQUAL_STRING("07:05 Weekend off", buf);
+}
+
+static void test_alarm_edit_fields() {
+  AlarmEdit e(alarm(1, 23, 59, kWeekdays));
+  e.increment();
+  TEST_ASSERT_EQUAL_UINT8(0, e.hour());
+  TEST_ASSERT_TRUE(e.next_field());
+  e.increment();
+  TEST_ASSERT_EQUAL_UINT8(0, e.minute());
+  TEST_ASSERT_TRUE(e.next_field());
+  TEST_ASSERT_EQUAL(AlarmField::Days, e.field());
+  TEST_ASSERT_TRUE(e.last_field());  // a preset: days is the last field
+  e.increment();
+  TEST_ASSERT_EQUAL(DaysPreset::Weekend, e.preset());
+  TEST_ASSERT_EQUAL_UINT8(kWeekend, e.days());
+  e.increment();
+  TEST_ASSERT_EQUAL(DaysPreset::Custom, e.preset());
+  TEST_ASSERT_EQUAL_UINT8(kWeekdays, e.days());  // starts from the alarm's own days
+  TEST_ASSERT_FALSE(e.last_field());
+  TEST_ASSERT_TRUE(e.next_field());
+  TEST_ASSERT_EQUAL(AlarmField::Mon, e.field());
+  e.increment();  // Monday off
+  for (int d = 0; d < 6; ++d) TEST_ASSERT_TRUE(e.next_field());
+  TEST_ASSERT_EQUAL(AlarmField::Sun, e.field());
+  e.increment();  // Sunday on
+  TEST_ASSERT_FALSE(e.next_field());
+  TEST_ASSERT_EQUAL_UINT8(TUE | WED | THU | FRI | SUN, e.days());
+  // Wraps back to Once.
+  AlarmEdit o(alarm(1, 7, 0, kOneShot));
+  TEST_ASSERT_EQUAL(DaysPreset::Once, o.preset());
+  o.next_field();
+  o.next_field();
+  for (int i = 0; i < static_cast<int>(DaysPreset::Count); ++i) o.increment();
+  TEST_ASSERT_EQUAL(DaysPreset::Once, o.preset());
+  TEST_ASSERT_EQUAL_UINT8(kOneShot, o.days());
+}
+
+static void test_alarm_add_defaults() {
+  Menu m;
+  open_alarms(m, ctx());
+  TEST_ASSERT_EQUAL(1, m.count());
+  TEST_ASSERT_EQUAL_STRING("Add alarm", m.item(0));
+  m.handle(Input::Select);
+  TEST_ASSERT_EQUAL(Screen::AlarmEdit, m.screen());
+  TEST_ASSERT_EQUAL_STRING("New alarm", m.title());
+  TEST_ASSERT_EQUAL_UINT8(7, m.alarm_edit().hour());
+  TEST_ASSERT_EQUAL_UINT8(0, m.alarm_edit().minute());
+  TEST_ASSERT_EQUAL(DaysPreset::Weekdays, m.alarm_edit().preset());
+  m.handle(Input::Next);  // 08:00
+  m.handle(Input::Select);
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Select));
+  TEST_ASSERT_EQUAL_STRING("Save", m.key_label());
+  TEST_ASSERT_EQUAL_STRING("Change", m.boot_label());
+  TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Select));
+  TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
+  TEST_ASSERT_EQUAL(1, m.alarms().size());
+  const Alarm& a = m.alarms()[0];
+  TEST_ASSERT_EQUAL_UINT8(1, a.id);
+  TEST_ASSERT_EQUAL_UINT8(8, a.hour);
+  TEST_ASSERT_EQUAL_UINT8(kWeekdays, a.days);
+  TEST_ASSERT_TRUE(a.enabled);
+  TEST_ASSERT_TRUE(a.label.empty());
+  TEST_ASSERT_EQUAL(0, m.selected());  // on the new alarm
+  TEST_ASSERT_EQUAL_STRING("08:00 Mon-Fri", m.item(0));
+}
+
+static void test_alarm_add_back_saves_nothing() {
+  Menu m;
+  open_alarms(m, alarm_ctx(2));
+  m.handle(Input::Next);
+  m.handle(Input::Next);
+  m.handle(Input::Select);  // Add alarm
+  m.handle(Input::Next);
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Back));
+  TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
+  TEST_ASSERT_EQUAL(2, m.selected());  // back on "Add alarm"
+  TEST_ASSERT_EQUAL(2, m.alarms().size());
+  m.handle(Input::Back);
+  TEST_ASSERT_EQUAL(Screen::Main, m.screen());
+  TEST_ASSERT_EQUAL(1, m.selected());
+}
+
+static void test_alarm_full_hides_add() {
+  Menu m;
+  open_alarms(m, alarm_ctx(sched::kMaxAlarms));
+  TEST_ASSERT_EQUAL(sched::kMaxAlarms, m.count());
+  for (size_t i = 0; i < m.count(); ++i) TEST_ASSERT_NOT_EQUAL(0, strcmp("Add alarm", m.item(i)));
+}
+
+static void test_alarm_edit_keeps_id_and_label() {
+  Context c = alarm_ctx(2);
+  c.alarms[1].label = "Gym";
+  c.alarms[1].enabled = false;
+  Menu m;
+  open_alarms(m, c);
+  m.handle(Input::Next);
+  TEST_ASSERT_EQUAL_STRING("06:30 Mon-Fri off", m.item(1));
+  m.handle(Input::Select);
+  TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
+  TEST_ASSERT_EQUAL_STRING("Alarm 06:30", m.title());
+  TEST_ASSERT_EQUAL_STRING("Edit", m.item(0));
+  TEST_ASSERT_EQUAL_STRING("Turn on", m.item(1));
+  m.handle(Input::Select);  // Edit
+  TEST_ASSERT_EQUAL_STRING("Edit alarm", m.title());
+  m.handle(Input::Select);
+  m.handle(Input::Next);  // 06:31
+  m.handle(Input::Select);
+  m.handle(Input::Next);  // Weekend
+  TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Select));
+  const Alarm& a = m.alarms()[1];
+  TEST_ASSERT_EQUAL_UINT8(2, a.id);
+  TEST_ASSERT_EQUAL_STRING("Gym", a.label.c_str());
+  TEST_ASSERT_EQUAL_UINT8(31, a.minute);
+  TEST_ASSERT_EQUAL_UINT8(kWeekend, a.days);
+  TEST_ASSERT_TRUE(a.enabled);  // saving turns it on
+  TEST_ASSERT_EQUAL(1, m.selected());
+}
+
+static void test_alarm_edit_back_keeps_alarm() {
+  Menu m;
+  open_alarms(m, alarm_ctx(1));
+  m.handle(Input::Select);
+  m.handle(Input::Select);  // Edit
+  m.handle(Input::Next);
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Back));
+  TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
+  TEST_ASSERT_EQUAL_UINT8(6, m.alarms()[0].hour);
+}
+
+static void test_alarm_toggle() {
+  Menu m;
+  open_alarms(m, alarm_ctx(1));
+  m.handle(Input::Select);
+  m.handle(Input::Next);
+  TEST_ASSERT_EQUAL_STRING("Turn off", m.item(m.selected()));
+  TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Select));
+  TEST_ASSERT_FALSE(m.alarms()[0].enabled);
+  TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
+  TEST_ASSERT_EQUAL_STRING("Turn on", m.item(m.selected()));
+  m.handle(Input::Back);
+  TEST_ASSERT_EQUAL_STRING("06:30 Mon-Fri off", m.item(0));
+}
+
+static void test_alarm_delete_needs_confirmation() {
+  Menu m;
+  open_alarms(m, alarm_ctx(sched::kMaxAlarms));
+  m.handle(Input::Next);
+  m.handle(Input::Select);  // the second alarm
+  m.handle(Input::Next);
+  m.handle(Input::Next);
+  TEST_ASSERT_EQUAL_STRING("Delete", m.item(m.selected()));
+  m.handle(Input::Select);
+  TEST_ASSERT_EQUAL(Screen::AlarmDelete, m.screen());
+  TEST_ASSERT_EQUAL_STRING("Delete 06:30?", m.title());
+  TEST_ASSERT_EQUAL_STRING("Cancel", m.item(m.selected()));
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Select));
+  TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
+  m.handle(Input::Select);
+  m.handle(Input::Next);
+  TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Select));
+  TEST_ASSERT_EQUAL(sched::kMaxAlarms - 1, m.alarms().size());
+  TEST_ASSERT_EQUAL_UINT8(3, m.alarms()[1].id);
+  TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
+  TEST_ASSERT_EQUAL(1, m.selected());
+  TEST_ASSERT_EQUAL_STRING("Add alarm", m.item(m.count() - 1));  // room again
+  // Deleting the last alarm leaves "Add alarm" selected.
+  Menu one;
+  open_alarms(one, alarm_ctx(1));
+  one.handle(Input::Select);
+  one.handle(Input::Next);
+  one.handle(Input::Next);
+  one.handle(Input::Select);
+  one.handle(Input::Next);
+  TEST_ASSERT_EQUAL(Action::SaveAlarms, one.handle(Input::Select));
+  TEST_ASSERT_EQUAL(0, one.alarms().size());
+  TEST_ASSERT_EQUAL(0, one.selected());
+  TEST_ASSERT_EQUAL_STRING("Add alarm", one.item(0));
+}
+
+static void test_alarm_text_fits_screen() {
+  Context c = ctx();
+  // The widest rows: alternating custom days, off.
+  c.alarms.push_back(alarm(1, 22, 58, MON | WED | FRI | SUN, false));
+  c.alarms.push_back(alarm(2, 22, 58, MON | TUE | THU | FRI | SUN, false));
+  c.alarms.push_back(alarm(3, 22, 58, kWeekend, false));
+  Menu m;
+  open_alarms(m, c);
+  check_fits(m);
+  m.handle(Input::Select);
+  check_fits(m);
+  m.handle(Input::Next);
+  m.handle(Input::Next);
+  m.handle(Input::Select);  // delete confirmation
+  check_fits(m);
+  open_alarms(m, c);
+  m.handle(Input::Select);
+  m.handle(Input::Select);  // the editor, custom days: every field
+  for (int f = 0; f < 10 && m.screen() == Screen::AlarmEdit; ++f) {
+    check_fits(m);
+    if (m.alarm_edit().last_field()) break;
+    m.handle(Input::Select);
   }
 }
 
@@ -475,6 +724,16 @@ int main() {
   RUN_TEST(test_wifi_setup);
   RUN_TEST(test_wifi_forget_needs_confirmation);
   RUN_TEST(test_text_fits_screen);
+  RUN_TEST(test_days_presets_and_text);
+  RUN_TEST(test_alarm_edit_fields);
+  RUN_TEST(test_alarm_add_defaults);
+  RUN_TEST(test_alarm_add_back_saves_nothing);
+  RUN_TEST(test_alarm_full_hides_add);
+  RUN_TEST(test_alarm_edit_keeps_id_and_label);
+  RUN_TEST(test_alarm_edit_back_keeps_alarm);
+  RUN_TEST(test_alarm_toggle);
+  RUN_TEST(test_alarm_delete_needs_confirmation);
+  RUN_TEST(test_alarm_text_fits_screen);
   RUN_TEST(test_first_time_flow);
   RUN_TEST(test_first_time_same_zone_and_wifi);
   RUN_TEST(test_closed_ignores_input);

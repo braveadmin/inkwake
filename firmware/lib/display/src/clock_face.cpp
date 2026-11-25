@@ -141,6 +141,19 @@ void draw_bell(Framebuffer& fb, int x, int baseline) {
   fb.fill(Rect{x + 8, top + 19, 2, 1}, true);
 }
 
+// Skipped ring (#55): a slash across the bell, top left to bottom right (as the
+// usual bell-slash icon), kept apart from the bell by a white gap so it reads
+// on the black dome.
+void draw_bell_slash(Framebuffer& fb, int x, int baseline) {
+  const int top = baseline - kBellH + 1;
+  for (int i = -2; i < kBellH + 2; ++i) {
+    const int y = top + i;
+    const int sx = x - 1 + (i * kBellW) / kBellH;  // runs left to right going down
+    fb.fill(Rect{sx - 2, y, 6, 1}, false);
+    fb.fill(Rect{sx, y, 2, 1}, true);
+  }
+}
+
 // What the bottom line shows of the alarm: "" when hidden, the snooze mark included.
 void alarm_shown(const FaceState& s, char* buf, size_t n) {
   if (!s.time_set || s.alarm == FaceState::kAlarmNone) {
@@ -149,7 +162,10 @@ void alarm_shown(const FaceState& s, char* buf, size_t n) {
   }
   char t[16];
   format_alarm(s, t, sizeof t);
-  snprintf(buf, n, "%c%s", s.alarm == FaceState::kAlarmSnoozed ? 'z' : 'b', t);
+  const char mark = s.alarm == FaceState::kAlarmSnoozed   ? 'z'
+                    : s.alarm == FaceState::kAlarmSkipped ? 's'
+                                                          : 'b';
+  snprintf(buf, n, "%c%s", mark, t);
 }
 
 void draw_alarm(Framebuffer& fb, const FaceState& s, int baseline) {
@@ -164,6 +180,7 @@ void draw_alarm(Framebuffer& fb, const FaceState& s, int baseline) {
   const int w = kBellW + kBellGap + text_width(fonts::kText30, buf);
   const int x = kAlarmX - w / 2;
   draw_bell(fb, x, baseline);
+  if (s.alarm == FaceState::kAlarmSkipped) draw_bell_slash(fb, x, baseline);
   draw_text(fb, fonts::kText30, x + kBellW + kBellGap, baseline, buf);
 }
 

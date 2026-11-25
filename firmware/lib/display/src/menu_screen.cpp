@@ -32,6 +32,20 @@ constexpr int kDigitGap = 2;  // between digits of one field
 constexpr int kSepPad = 6;    // either side of "-" and ":"
 constexpr int kMarkPad = 5;   // black mark around a field's digits
 
+// Alarm editor (#55): time, days preset, then the row of seven days.
+constexpr int kAlarmTimeBaseline = 160;
+constexpr int kPresetBaseline = 212;
+constexpr int kPresetPad = 6;  // black mark around the preset name
+constexpr int kDayTop = 236;
+constexpr int kDayW = 48;
+constexpr int kDayH = 32;
+constexpr int kDayGap = 6;
+constexpr int kDayTextDy = 23;  // text baseline below the cell top
+constexpr int kDayBarGap = 4;   // bar under the day being changed
+constexpr int kDayBarH = 5;
+constexpr int kDayBorder = 2;  // outline of a day that is off
+const char* const kDay2[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
+
 const char* const kWeekdays[] = {"Monday", "Tuesday",  "Wednesday", "Thursday",
                                  "Friday", "Saturday", "Sunday"};
 
@@ -62,6 +76,7 @@ struct Piece {
 
 const Piece kDateRow[] = {{0, 0, 4}, {'-', 0, 0}, {0, 1, 2}, {'-', 0, 0}, {0, 2, 2}};
 const Piece kTimeRow[] = {{0, 3, 2}, {':', 0, 0}, {0, 4, 2}};
+const Piece kAlarmTimeRow[] = {{0, 0, 2}, {':', 0, 0}, {0, 1, 2}};
 
 int piece_w(const Piece& p) { return p.sep ? sep_w(p.sep) : digits_w(p.digits); }
 
@@ -185,6 +200,65 @@ void render_datetime(Framebuffer& fb, const char* title, const DateTimeView& v,
   if (v.month >= 1 && v.month <= 12) {
     draw_text_centered(fb, fonts::kText20, Framebuffer::kWidth / 2, kWeekdayBaseline,
                        kWeekdays[weekday(v.year, v.month, v.day)]);
+  }
+}
+
+namespace {
+
+int day_x(int d) {
+  constexpr int kRowW = 7 * kDayW + 6 * kDayGap;
+  return (Framebuffer::kWidth - kRowW) / 2 + d * (kDayW + kDayGap);
+}
+
+Rect preset_rect(const char* days) {
+  const int w = text_width(fonts::kText30, days);
+  return Rect{(Framebuffer::kWidth - w) / 2 - kPresetPad,
+              kPresetBaseline - fonts::kText30.ascent - kPresetPad, w + 2 * kPresetPad,
+              fonts::kText30.ascent + 2 * kPresetPad + 7};  // + room for descenders
+}
+
+}  // namespace
+
+Rect alarm_field_rect(const AlarmEditView& v, int field) {
+  int x = 0, w = 0;
+  if (field <= 1 && field_x(kAlarmTimeRow, field, x, w)) {
+    return mark_rect(x, w, kAlarmTimeBaseline);
+  }
+  if (field == 2) return preset_rect(v.days);
+  if (field >= 3 && field <= 9) {
+    const int top = kDayTop;
+    return Rect{day_x(field - 3), top, kDayW, kDayH + kDayBarGap + kDayBarH};
+  }
+  return Rect{};
+}
+
+void render_alarm_edit(Framebuffer& fb, const char* title, const AlarmEditView& v,
+                       const ButtonLabels& buttons) {
+  fb.clear();
+  draw_buttons_and_title(fb, title, buttons);
+  const int values[] = {v.hour, v.minute};
+  draw_row(fb, kAlarmTimeRow, values, v.field, kAlarmTimeBaseline);
+
+  const bool preset_marked = v.field == 2;
+  if (preset_marked) fb.fill(preset_rect(v.days), true);
+  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kPresetBaseline, v.days,
+                     !preset_marked);
+
+  for (int d = 0; d < 7; ++d) {
+    const int x = day_x(d);
+    const bool on = (v.mask >> d) & 1;
+    if (on) {
+      fb.fill(Rect{x, kDayTop, kDayW, kDayH}, true);
+    } else {
+      fb.fill(Rect{x, kDayTop, kDayW, kDayBorder}, true);
+      fb.fill(Rect{x, kDayTop + kDayH - kDayBorder, kDayW, kDayBorder}, true);
+      fb.fill(Rect{x, kDayTop, kDayBorder, kDayH}, true);
+      fb.fill(Rect{x + kDayW - kDayBorder, kDayTop, kDayBorder, kDayH}, true);
+    }
+    draw_text_centered(fb, fonts::kText20, x + kDayW / 2, kDayTop + kDayTextDy, kDay2[d], !on);
+    if (v.field == 3 + d) {
+      fb.fill(Rect{x, kDayTop + kDayH + kDayBarGap, kDayW, kDayBarH}, true);
+    }
   }
 }
 

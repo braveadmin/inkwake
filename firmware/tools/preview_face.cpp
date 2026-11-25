@@ -2,16 +2,19 @@
 // Renders the clock face on the host into a PBM image, for layout review
 // without the board. Dirty regions are outlined with --regions, --wifi shows
 // the Wi-Fi failure mark, --low /
-// --critical the battery mark, --alarm HH:MM [--snoozed] [--wd N] the next
+// --critical the battery mark, --alarm HH:MM [--snoozed|--skipped] [--wd N] the next
 // alarm, --setup draws the Wi-Fi setup screen and --ringing the alarm screen
 // instead. --menu SCREEN draws a button menu screen (#41): main, tz, custom
-// (timezone list with a custom zone), wifi, forget, first (first start), or date0 .. date4 (the
-// date & time editor with field 0-4 marked).
+// (timezone list with a custom zone), wifi, forget, first (first start), date0 .. date4 (the
+// date & time editor with field 0-4 marked), alarms (#55: list), alarm (one alarm),
+// delete (its confirmation), add (new alarm) or alarm0 .. alarm9 (the editor on a
+// custom-days alarm with field 0-9 marked).
 //
 //   gcc -c lib/qrcodegen/src/qrcodegen.c -o qrcodegen.o
 //   g++ -std=c++17 -Ilib/display/src -Ilib/qrcodegen/src -Ilib/menu/src -Ilib/tz/src
-//       -Ilib/alarm_core/src tools/preview_face.cpp lib/display/src/*.cpp lib/menu/src/*.cpp
-//       lib/tz/src/*.cpp lib/alarm_core/src/*.cpp qrcodegen.o -o preview   (one line)
+//       -Ilib/alarm_core/src -Ilib/alarm_sched/src tools/preview_face.cpp lib/display/src/*.cpp
+//       lib/menu/src/*.cpp lib/tz/src/*.cpp lib/alarm_core/src/*.cpp lib/alarm_sched/src/*.cpp
+//       qrcodegen.o -o preview   (one line)
 //   ./preview face.pbm 7 5 2 18 11 215 --regions
 //   (hour minute weekday[0=Mon] day month temp_dc; temp_dc -32768 = no reading)
 //   ./preview menu.pbm --menu date3
@@ -34,19 +37,54 @@ static void draw_menu(Framebuffer& fb, const char* name) {
   c.now = menu::DateTime{2026, 11, 25, 14, 7};
   c.tz_preset = std::strcmp(name, "custom") == 0 ? -1 : 0;
   c.wifi_saved = true;
+  Alarm a;
+  a.id = 1;
+  a.hour = 6;
+  a.minute = 45;
+  a.days = MON | WED | FRI;
+  c.alarms.push_back(a);
+  a.id = 2;
+  a.hour = 9;
+  a.minute = 30;
+  a.days = kWeekend;
+  a.enabled = false;
+  c.alarms.push_back(a);
   menu::Menu m;
   m.open(c);
   using menu::Input;
-  if (std::strcmp(name, "first") == 0) {
+  const bool alarms = std::strncmp(name, "alarm", 5) == 0 || std::strcmp(name, "delete") == 0 ||
+                      std::strcmp(name, "add") == 0;
+  if (alarms) {
+    m.handle(Input::Next);
+    m.handle(Input::Select);  // the alarm list
+  }
+  if (std::strcmp(name, "add") == 0) {
+    m.handle(Input::Next);
+    m.handle(Input::Next);
+    m.handle(Input::Select);
+  } else if (std::strcmp(name, "alarm") == 0 || std::strcmp(name, "delete") == 0) {
+    m.handle(Input::Select);
+    if (std::strcmp(name, "delete") == 0) {
+      m.handle(Input::Next);
+      m.handle(Input::Next);
+      m.handle(Input::Select);
+    }
+  } else if (alarms && name[5] >= '0' && name[5] <= '9') {
+    m.handle(Input::Select);
+    m.handle(Input::Select);  // Edit
+    for (int f = name[5] - '0'; f > 0; --f) m.handle(Input::Select);
+  } else if (std::strcmp(name, "first") == 0) {
     m.open_first_time(c);
   } else if (std::strncmp(name, "date", 4) == 0) {
     m.handle(Input::Select);
     for (int f = std::atoi(name + 4); f > 0; --f) m.handle(Input::Select);
   } else if (std::strcmp(name, "tz") == 0 || std::strcmp(name, "custom") == 0) {
     m.handle(Input::Next);
+    m.handle(Input::Next);
     m.handle(Input::Select);
     for (int k = 0; k < 6; ++k) m.handle(Input::Next);  // scrolled to show both arrows
   } else if (std::strcmp(name, "wifi") == 0 || std::strcmp(name, "forget") == 0) {
+    m.handle(Input::Next);
     m.handle(Input::Next);
     m.handle(Input::Next);
     m.handle(Input::Select);
@@ -62,7 +100,15 @@ static void draw_menu(Framebuffer& fb, const char* name) {
                     {m.key_label(), m.key_hold_label(), m.boot_label()});
     return;
   }
-  const char* items[menu::kTzPresetCount + 1];
+  if (m.screen() == menu::Screen::AlarmEdit) {
+    const menu::AlarmEdit& e = m.alarm_edit();
+    render_alarm_edit(fb, m.title(),
+                      {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
+                       static_cast<int>(e.field())},
+                      {m.key_label(), m.key_hold_label(), m.boot_label()});
+    return;
+  }
+  const char* items[menu::kMaxListItems];
   for (size_t i = 0; i < m.count(); ++i) items[i] = m.item(i);
   render_list(fb, m.title(), items, m.count(), m.selected(),
               {m.key_label(), m.key_hold_label(), m.boot_label()});
@@ -70,12 +116,12 @@ static void draw_menu(Framebuffer& fb, const char* name) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::fprintf(
-        stderr,
-        "usage: %s out.pbm [h m weekday day month temp_dc] [--regions] [--wifi] "
-        "[--low|--critical] [--alarm HH:MM [--snoozed] [--wd N]] [--setup|--ringing|--menu "
-        "SCREEN]\n",
-        argv[0]);
+    std::fprintf(stderr,
+                 "usage: %s out.pbm [h m weekday day month temp_dc] [--regions] [--wifi] "
+                 "[--low|--critical] [--alarm HH:MM [--snoozed|--skipped] [--wd N]] "
+                 "[--setup|--ringing|--menu "
+                 "SCREEN]\n",
+                 argv[0]);
     return 2;
   }
   FaceState s{7, 5, 2, 18, 11, 215};
@@ -105,6 +151,7 @@ int main(int argc, char** argv) {
       s.alarm_minute = static_cast<uint8_t>(m);
     }
     if (std::strcmp(argv[i], "--snoozed") == 0) s.alarm = FaceState::kAlarmSnoozed;
+    if (std::strcmp(argv[i], "--skipped") == 0) s.alarm = FaceState::kAlarmSkipped;
     if (std::strcmp(argv[i], "--wd") == 0 && i + 1 < argc) {
       s.alarm_weekday = static_cast<uint8_t>(std::atoi(argv[i + 1]));
     }

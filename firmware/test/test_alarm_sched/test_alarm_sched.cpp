@@ -127,6 +127,45 @@ void test_upcoming() {
   TEST_ASSERT_FALSE(upcoming({}, berlin(), kMon0600).has_value());
 }
 
+void test_due_leaves_out_the_skipped_ring() {
+  std::vector<Alarm> v{make(1, 7, 0, kWeekdays), make(2, 7, 0, kWeekdays)};
+  const int64_t at = utc(2026, 11, 23, 6, 0);
+  // The other alarm at the same minute still rings.
+  auto d = due(v, berlin(), at - 60, at, Skip{1, at});
+  TEST_ASSERT_TRUE(d.has_value());
+  TEST_ASSERT_EQUAL_UINT32(1, d->index);
+  v.pop_back();
+  TEST_ASSERT_FALSE(due(v, berlin(), at - 60, at, Skip{1, at}).has_value());
+  // Only that ring: the next day's rings again.
+  TEST_ASSERT_TRUE(due(v, berlin(), at + 86340, at + 86400, Skip{1, at}).has_value());
+}
+
+void test_toggle_skip() {
+  std::vector<Alarm> v{make(1, 9, 30, kWeekend), make(2, 7, 0, kWeekdays)};
+  const Skip s = toggle_skip(v, berlin(), Skip{}, kMon0600);
+  TEST_ASSERT_EQUAL_UINT8(2, s.id);
+  TEST_ASSERT_EQUAL_INT64(utc(2026, 11, 23, 6, 0), s.fire_utc);
+  TEST_ASSERT_EQUAL(SkipState::Pending, skip_state(v, berlin(), s, kMon0600));
+  // A second tap undoes it.
+  TEST_ASSERT_EQUAL_UINT8(0, toggle_skip(v, berlin(), s, kMon0600).id);
+  TEST_ASSERT_EQUAL(SkipState::None, skip_state(v, berlin(), Skip{}, kMon0600));
+  // No alarm on: nothing to skip.
+  TEST_ASSERT_EQUAL_UINT8(0, toggle_skip({}, berlin(), Skip{}, kMon0600).id);
+}
+
+void test_skip_state() {
+  std::vector<Alarm> v{make(2, 7, 0, kWeekdays)};
+  const Skip s{2, utc(2026, 11, 23, 6, 0)};
+  TEST_ASSERT_EQUAL(SkipState::Passed, skip_state(v, berlin(), s, s.fire_utc));
+  TEST_ASSERT_EQUAL(SkipState::Passed, skip_state(v, berlin(), s, s.fire_utc + 3600));
+  v[0].minute = 15;  // moved
+  TEST_ASSERT_EQUAL(SkipState::Stale, skip_state(v, berlin(), s, kMon0600));
+  v[0].minute = 0;
+  v[0].enabled = false;  // turned off
+  TEST_ASSERT_EQUAL(SkipState::Stale, skip_state(v, berlin(), s, kMon0600));
+  TEST_ASSERT_EQUAL(SkipState::Stale, skip_state({}, berlin(), s, kMon0600));  // deleted
+}
+
 void test_ids() {
   std::vector<Alarm> v{make(1, 7, 0, 0), make(3, 7, 0, 0)};
   TEST_ASSERT_EQUAL_UINT8(2, free_id(v));
@@ -247,6 +286,9 @@ int main(int, char**) {
   RUN_TEST(test_due_window);
   RUN_TEST(test_due_picks_earliest);
   RUN_TEST(test_upcoming);
+  RUN_TEST(test_due_leaves_out_the_skipped_ring);
+  RUN_TEST(test_toggle_skip);
+  RUN_TEST(test_skip_state);
   RUN_TEST(test_ids);
   RUN_TEST(test_check);
   RUN_TEST(test_codec_round_trip);

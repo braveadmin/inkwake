@@ -437,6 +437,13 @@ static void test_alarm_field() {
 
   check_diff_covered(none, wide);
   check_diff_covered(wide, with_alarm(FaceState::kAlarmSnoozed, 7, 9));
+  // BOOT skip (#55): same time, crossed-out bell, still a redraw of the line.
+  const FaceState next = with_alarm(FaceState::kAlarmNext, 7, 0);
+  const FaceState skipped = with_alarm(FaceState::kAlarmSkipped, 7, 0);
+  TEST_ASSERT_EQUAL_UINT32(1, face_dirty(next, skipped, out));
+  check_diff_covered(next, skipped);
+  check_diff_covered(skipped, next);
+  check_diff_covered(none, with_alarm(FaceState::kAlarmSkipped, 23, 58, 2));
   check_diff_covered(with_alarm(FaceState::kAlarmNext, 7, 0),
                      with_alarm(FaceState::kAlarmNext, 6, 45));
   FaceState unset = wide;
@@ -494,6 +501,42 @@ static void test_datetime_marks_field() {
   TEST_ASSERT_TRUE(datetime_field_rect(5).empty());
 }
 
+// ---- alarm editor (#55) -----------------------------------------------------------
+
+static void test_alarm_edit_marks_field() {
+  const uint8_t mask = 0x15;  // Mo We Fr
+  for (int f = 0; f < 10; ++f) {
+    const AlarmEditView v{6, 45, "Custom", mask, f};
+    render_alarm_edit(g_fb, "Edit alarm", v, {"Next", "hold: back", "+1"});
+    for (int g = 0; g < 10; ++g) {
+      const Rect r = alarm_field_rect(v, g);
+      TEST_ASSERT_FALSE(r.empty());
+      TEST_ASSERT_TRUE(r.x >= 0 && r.y >= 0 && r.x + r.w <= Framebuffer::kWidth &&
+                       r.y + r.h <= Framebuffer::kHeight);
+      if (g < 3) {
+        // Hour, minute, preset: the marked one's corner is black.
+        TEST_ASSERT_EQUAL(f == g, g_fb.get(r.x, r.y));
+      } else {
+        // A day: filled when on; the bar under it only while it is being changed.
+        const bool on = (mask >> (g - 3)) & 1;
+        TEST_ASSERT_EQUAL(on, g_fb.get(r.x + r.w / 2, r.y + 4));
+        TEST_ASSERT_EQUAL(f == g, g_fb.get(r.x + r.w / 2, r.y + r.h - 1));
+      }
+    }
+  }
+  // Fields never overlap each other.
+  const AlarmEditView v{6, 45, "Weekend", 0, 0};
+  for (int a = 0; a < 10; ++a) {
+    for (int b = a + 1; b < 10; ++b) {
+      const Rect ra = alarm_field_rect(v, a), rb = alarm_field_rect(v, b);
+      const bool overlap =
+          ra.x < rb.x + rb.w && rb.x < ra.x + ra.w && ra.y < rb.y + rb.h && rb.y < ra.y + ra.h;
+      TEST_ASSERT_FALSE(overlap);
+    }
+  }
+  TEST_ASSERT_TRUE(alarm_field_rect(v, 10).empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_packing_matches_spike_formula);
@@ -520,5 +563,6 @@ int main(int, char**) {
   RUN_TEST(test_list_scrolls_around_selection);
   RUN_TEST(test_list_marks_selection);
   RUN_TEST(test_datetime_marks_field);
+  RUN_TEST(test_alarm_edit_marks_field);
   return UNITY_END();
 }

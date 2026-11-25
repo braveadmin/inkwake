@@ -50,7 +50,7 @@ std::optional<int64_t> next_fire(const Alarm& a, const tz::Zone& zone, int64_t a
 }
 
 std::optional<Due> due(const std::vector<Alarm>& alarms, const tz::Zone& zone, int64_t prev_utc,
-                       int64_t now_utc) {
+                       int64_t now_utc, const Skip& skip) {
   // Fire times before the late window can never be due; starting there also
   // keeps a long-ago prev_utc (first check after a gap) from finding only them.
   const int64_t from = std::max(prev_utc, now_utc - kMaxLateS - 1);
@@ -58,6 +58,7 @@ std::optional<Due> due(const std::vector<Alarm>& alarms, const tz::Zone& zone, i
   for (size_t i = 0; i < alarms.size(); ++i) {
     const auto f = next_fire(alarms[i], zone, from);
     if (!f || *f > now_utc || now_utc - *f > kMaxLateS) continue;
+    if (skip.id != 0 && alarms[i].id == skip.id && *f == skip.fire_utc) continue;
     if (!best || *f < best->fire_utc) best = Due{i, *f};
   }
   return best;
@@ -71,6 +72,26 @@ std::optional<Upcoming> upcoming(const std::vector<Alarm>& alarms, const tz::Zon
     if (f && (!best || *f < best->fire_utc)) best = Upcoming{i, *f};
   }
   return best;
+}
+
+SkipState skip_state(const std::vector<Alarm>& alarms, const tz::Zone& zone, const Skip& skip,
+                     int64_t now_utc) {
+  if (skip.id == 0) return SkipState::None;
+  const auto i = find(alarms, skip.id);
+  if (!i || !alarms[*i].enabled) return SkipState::Stale;
+  if (skip.fire_utc <= now_utc) return SkipState::Passed;
+  // Still ahead: valid only while it is still the alarm's next ring.
+  const auto f = next_fire(alarms[*i], zone, now_utc);
+  return f && *f == skip.fire_utc ? SkipState::Pending : SkipState::Stale;
+}
+
+Skip toggle_skip(const std::vector<Alarm>& alarms, const tz::Zone& zone, const Skip& skip,
+                 int64_t now_utc) {
+  const auto u = upcoming(alarms, zone, now_utc);
+  if (!u) return {};
+  const Skip next{alarms[u->index].id, u->fire_utc};
+  if (skip.id == next.id && skip.fire_utc == next.fire_utc) return {};  // undo
+  return next;
 }
 
 uint8_t free_id(const std::vector<Alarm>& alarms) {
