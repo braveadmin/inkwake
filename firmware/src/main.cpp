@@ -30,8 +30,12 @@
 // with a growing delay (lib/ntp), sooner while the time is not set. Without
 // Wi-Fi the clock just keeps running from the RTC.
 //
-// Wi-Fi setup (#20, ADR-0016): at power-on with no network saved, on KEY held
-// 5 s, or `setup` over serial, the clock opens the open network inkwake-XXXX
+// First start (#34, ADR-0018): with no time and no network saved, power-on
+// opens the timezone list and then the date & time editor (KEY held 5 s there
+// opens Wi-Fi setup instead).
+//
+// Wi-Fi setup (#20, ADR-0016): on KEY held 5 s, from the button menu, or
+// `setup` over serial, the clock opens the open network inkwake-XXXX
 // with a captive settings page and shows a QR code that joins it. Setup ends
 // when a network connects (then NTP syncs at once), after 10 min without page
 // activity, or on a KEY press. A failed sync later only shows a small Wi-Fi "!"
@@ -1046,7 +1050,7 @@ bool menu_action(const menu::Menu& m, menu::Action a, bool verbose) {
 // due, then redraws the face (or opens Wi-Fi setup, if chosen). Called with
 // KEY up. Returns the NTP log letter of a sync after Wi-Fi setup, or 0.
 char run_menu(menu::Menu& m, bool verbose) {
-  menu::Button key({menu::kBackHoldMs, 0, 0});
+  menu::Button key({m.back_hold_ms(), 0, 0});
   menu::Button boot({0, menu::kRepeatDelayMs, menu::kRepeatMs});
   if (boot_down()) {
     boot.pressed_since(millis());
@@ -1091,6 +1095,21 @@ char run_menu(menu::Menu& m, bool verbose) {
   return 0;
 }
 
+// Sets the time with the buttons while it is not set: with no network saved
+// (first start, #34) the timezone list comes first and KEY held 5 s opens
+// Wi-Fi setup; otherwise only the date & time editor. `welcome` shows a
+// greeting first (power-on). Returns the NTP log letter after Wi-Fi setup, or 0.
+char run_set_time(bool welcome, bool verbose) {
+  menu::Menu m;
+  if (g_rtc.wifi_configured) {
+    m.open_datetime(menu_context());
+  } else {
+    if (welcome) show_note("Welcome to inkwake", "Let's set the clock");
+    m.open_first_time(menu_context());
+  }
+  return run_menu(m, verbose);
+}
+
 // KEY went down at `since_ms` with the face shown; waits for what it means:
 //   tap:  the date & time editor while the time is not set, else nothing
 //   2 s:  stops a snoozed alarm (ADR-0017); otherwise shows "Menu" and opens
@@ -1106,9 +1125,7 @@ char handle_face_key(uint32_t since_ms, bool verbose) {
     const menu::Gesture g = key.update(key_down(), now);
     if (g == menu::Gesture::Tap) {
       if (g_rtc.time_set) return 0;
-      menu::Menu m;
-      m.open_datetime(menu_context());
-      return run_menu(m, verbose);
+      return run_set_time(false, verbose);
     }
     if (g == menu::Gesture::Hold) {
       if (g_rtc.ring.state == RingState::Snoozed) {
@@ -1873,11 +1890,14 @@ void setup() {
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
     g_lcd.begin(true);
-    update_display(true);
+    // First start (#34): no time and no network saved. The time is set with
+    // the buttons; KEY held 5 s there opens Wi-Fi setup. With a network
+    // saved the boot NTP sync below sets the time instead.
+    const bool first_time = !g_rtc.wifi_configured && !g_rtc.time_set;
+    if (!first_time) update_display(true);
     log_wake('P', rtc_status, kFullRefresh, 0);
-    // First boot (or after `wifi forget`): open setup right away.
-    if (!g_rtc.wifi_configured) {
-      const char letter = run_setup(false);
+    if (first_time) {
+      const char letter = run_set_time(true, false);
       if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
     }
   }

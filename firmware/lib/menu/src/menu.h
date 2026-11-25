@@ -8,11 +8,15 @@
 //   Timezone:    preset list (plus "Custom" while a zone not in it is set)
 //   Wi-Fi:       Set up Wi-Fi, Forget all networks (only with one saved)
 //   Forget:      Cancel, Forget all  (confirmation, Cancel first)
+//
+// First-time setup (#34): timezone, then the date & time editor, with no way
+// back; KEY held 5 s opens Wi-Fi setup instead (a sync then sets the time).
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
+#include "button.h"
 #include "datetime.h"
 
 namespace inkwake::menu {
@@ -46,6 +50,13 @@ class Menu {
   // Opens the date & time editor alone ("Time not set"): saving or going
   // back closes the menu.
   void open_datetime(const Context& c);
+  // First-time setup: the timezone list, then the date & time editor. KEY
+  // held 5 s (back_hold_ms()) asks for Wi-Fi setup; the last field saves.
+  void open_first_time(const Context& c);
+
+  // How long KEY must be held for Input::Back on this menu.
+  uint32_t back_hold_ms() const { return first_time_ ? kSetupHoldMs : kBackHoldMs; }
+  bool first_time() const { return first_time_; }
 
   Action handle(Input in);
 
@@ -80,6 +91,7 @@ class Menu {
   DateTime value_;
   Field field_ = Field::Year;
   bool datetime_alone_ = false;
+  bool first_time_ = false;
   size_t tz_choice_ = 0;
 };
 

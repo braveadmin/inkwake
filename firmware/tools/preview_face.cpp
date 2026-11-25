@@ -5,7 +5,7 @@
 // --critical the battery mark, --alarm HH:MM [--snoozed] [--wd N] the next
 // alarm, --setup draws the Wi-Fi setup screen and --ringing the alarm screen
 // instead. --menu SCREEN draws a button menu screen (#41): main, tz, custom
-// (timezone list with a custom zone), wifi, forget, or date0 .. date4 (the
+// (timezone list with a custom zone), wifi, forget, first (first start), or date0 .. date4 (the
 // date & time editor with field 0-4 marked).
 //
 //   gcc -c lib/qrcodegen/src/qrcodegen.c -o qrcodegen.o
@@ -37,7 +37,9 @@ static void draw_menu(Framebuffer& fb, const char* name) {
   menu::Menu m;
   m.open(c);
   using menu::Input;
-  if (std::strncmp(name, "date", 4) == 0) {
+  if (std::strcmp(name, "first") == 0) {
+    m.open_first_time(c);
+  } else if (std::strncmp(name, "date", 4) == 0) {
     m.handle(Input::Select);
     for (int f = std::atoi(name + 4); f > 0; --f) m.handle(Input::Select);
   } else if (std::strcmp(name, "tz") == 0 || std::strcmp(name, "custom") == 0) {

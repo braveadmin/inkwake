@@ -20,6 +20,7 @@ constexpr char kCustom[] = "Custom";
 void Menu::open(const Context& c) {
   ctx_ = c;
   datetime_alone_ = false;
+  first_time_ = false;
   main_sel_ = 0;
   show(Screen::Main, 0);
 }
@@ -27,9 +28,17 @@ void Menu::open(const Context& c) {
 void Menu::open_datetime(const Context& c) {
   ctx_ = c;
   datetime_alone_ = true;
+  first_time_ = false;
   value_ = clamped(c.now);
   field_ = Field::Year;
   show(Screen::DateTime, 0);
+}
+
+void Menu::open_first_time(const Context& c) {
+  ctx_ = c;
+  datetime_alone_ = true;
+  first_time_ = true;
+  show(Screen::Timezone, has_custom() ? 0 : static_cast<size_t>(c.tz_preset));
 }
 
 void Menu::show(Screen s, size_t sel) {
@@ -96,7 +105,7 @@ const char* Menu::key_label() const {
     case Screen::DateTime:
       return static_cast<int>(field_) == kFieldCount - 1 ? "Save" : "Next";
     case Screen::Timezone:
-      return "Save";
+      return first_time_ ? "OK" : "Save";  // "Next" is BOOT's
     case Screen::Wifi:
     case Screen::WifiForget:
       return "Choose";
@@ -111,7 +120,10 @@ const char* Menu::key_hold_label() const {
       return "";
     case Screen::Main:
       return "hold: close";
+    case Screen::Timezone:
+      return first_time_ ? "hold 5 s: Wi-Fi" : "hold: back";
     case Screen::DateTime:
+      if (first_time_) return "hold 5 s: Wi-Fi";
       return datetime_alone_ ? "hold: close" : "hold: back";
     default:
       return "hold: back";
@@ -156,6 +168,9 @@ Action Menu::handle(Input in) {
     case Screen::DateTime:
       if (in == Input::Next) {
         increment(value_, field_);
+      } else if (in == Input::Back && first_time_) {
+        show(Screen::Closed, 0);
+        return Action::WifiSetup;
       } else if (in == Input::Back) {
         show(datetime_alone_ ? Screen::Closed : Screen::Main, main_sel_);
       } else if (static_cast<int>(field_) + 1 < kFieldCount) {
@@ -169,11 +184,20 @@ Action Menu::handle(Input in) {
     case Screen::Timezone:
       if (in == Input::Next) {
         sel_ = (sel_ + 1) % count();
+      } else if (in == Input::Back && first_time_) {
+        show(Screen::Closed, 0);
+        return Action::WifiSetup;
       } else if (in == Input::Back) {
         show(Screen::Main, main_sel_);
       } else {
         const size_t pick = sel_;
-        show(Screen::Main, main_sel_);
+        if (first_time_) {  // on to the date & time editor
+          value_ = clamped(ctx_.now);
+          field_ = Field::Year;
+          show(Screen::DateTime, 0);
+        } else {
+          show(Screen::Main, main_sel_);
+        }
         if (has_custom() && pick == 0) return Action::None;  // keeps the custom zone
         const size_t preset = pick - (has_custom() ? 1 : 0);
         if (static_cast<int>(preset) == ctx_.tz_preset) return Action::None;  // no change

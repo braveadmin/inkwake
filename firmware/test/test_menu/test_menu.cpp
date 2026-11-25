@@ -393,11 +393,50 @@ static void test_text_fits_screen() {
       check_fits(m);
     }
   }
+  m.open_first_time(ctx());
+  check_fits(m);
+  m.handle(Input::Select);
+  check_fits(m);
   m.open_datetime(ctx());
   for (int f = 0; f < kFieldCount; ++f) {
     check_fits(m);
     if (f + 1 < kFieldCount) m.handle(Input::Select);
   }
+}
+
+static void test_first_time_flow() {
+  Menu m;
+  m.open_first_time(ctx(0));
+  TEST_ASSERT_TRUE(m.first_time());
+  TEST_ASSERT_EQUAL(kSetupHoldMs, m.back_hold_ms());
+  TEST_ASSERT_EQUAL(Screen::Timezone, m.screen());
+  TEST_ASSERT_EQUAL(0, m.selected());
+  TEST_ASSERT_EQUAL_STRING("OK", m.key_label());
+  TEST_ASSERT_EQUAL_STRING("hold 5 s: Wi-Fi", m.key_hold_label());
+  m.handle(Input::Next);  // London / Lisbon
+  TEST_ASSERT_EQUAL(Action::SaveTimezone, m.handle(Input::Select));
+  TEST_ASSERT_EQUAL(1, m.tz_choice());
+  TEST_ASSERT_EQUAL(Screen::DateTime, m.screen());
+  TEST_ASSERT_EQUAL(Field::Year, m.field());
+  TEST_ASSERT_EQUAL_STRING("hold 5 s: Wi-Fi", m.key_hold_label());
+  for (int f = 0; f < kFieldCount - 1; ++f) m.handle(Input::Select);
+  TEST_ASSERT_EQUAL(Action::SaveDateTime, m.handle(Input::Select));
+  TEST_ASSERT_TRUE(m.closed());
+}
+
+static void test_first_time_same_zone_and_wifi() {
+  Menu m;
+  m.open_first_time(ctx(0));
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Select));  // default zone kept
+  TEST_ASSERT_EQUAL(Screen::DateTime, m.screen());
+  TEST_ASSERT_EQUAL(Action::WifiSetup, m.handle(Input::Back));
+  TEST_ASSERT_TRUE(m.closed());
+  m.open_first_time(ctx(-1));
+  TEST_ASSERT_EQUAL_STRING("Custom", m.item(m.selected()));
+  TEST_ASSERT_EQUAL(Action::WifiSetup, m.handle(Input::Back));
+  m.open(ctx());
+  TEST_ASSERT_FALSE(m.first_time());
+  TEST_ASSERT_EQUAL(kBackHoldMs, m.back_hold_ms());
 }
 
 static void test_closed_ignores_input() {
@@ -436,6 +475,8 @@ int main() {
   RUN_TEST(test_wifi_setup);
   RUN_TEST(test_wifi_forget_needs_confirmation);
   RUN_TEST(test_text_fits_screen);
+  RUN_TEST(test_first_time_flow);
+  RUN_TEST(test_first_time_same_zone_and_wifi);
   RUN_TEST(test_closed_ignores_input);
   return UNITY_END();
 }
