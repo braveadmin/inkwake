@@ -36,10 +36,19 @@ struct Due {
   int64_t fire_utc;
 };
 
+// One ring skipped with BOOT on the face (#55): alarm `id` stays on, but does
+// not ring at `fire_utc`. Plain data for RTC memory; id 0 = no skip (alarm ids
+// are 1-255).
+struct Skip {
+  uint8_t id;
+  int64_t fire_utc;
+};
+
 // Alarm whose fire time lies in (prev_utc, now_utc] and is no more than
 // kMaxLateS before now_utc. The earliest wins, ties go to the lowest index.
+// The ring in `skip` is left out.
 std::optional<Due> due(const std::vector<Alarm>& alarms, const tz::Zone& zone, int64_t prev_utc,
-                       int64_t now_utc);
+                       int64_t now_utc, const Skip& skip = {});
 
 struct Upcoming {
   size_t index;
@@ -48,6 +57,20 @@ struct Upcoming {
 // Soonest enabled alarm after now_utc.
 std::optional<Upcoming> upcoming(const std::vector<Alarm>& alarms, const tz::Zone& zone,
                                  int64_t now_utc);
+
+enum class SkipState : uint8_t {
+  None,     // no skip set
+  Pending,  // the skipped ring is still ahead
+  Passed,   // its time has come: clear the skip (a one-shot alarm turns off, as if it rang)
+  Stale,    // the alarm was deleted, turned off or moved: clear the skip
+};
+SkipState skip_state(const std::vector<Alarm>& alarms, const tz::Zone& zone, const Skip& skip,
+                     int64_t now_utc);
+
+// BOOT on the face: skips the next ring of the soonest alarm, or, if that ring
+// is already skipped, undoes it. Returns the new skip ({} = none).
+Skip toggle_skip(const std::vector<Alarm>& alarms, const tz::Zone& zone, const Skip& skip,
+                 int64_t now_utc);
 
 // Lowest id 1..255 not used yet, 0 when none is free.
 uint8_t free_id(const std::vector<Alarm>& alarms);

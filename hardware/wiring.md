@@ -14,7 +14,7 @@ From Waveshare's pin definition image and demo code (docs/m0-spike.md). PWR is a
 | I2S (ES8311 + ES7210): DSDIN, SCLK, ASDOUT, MCLK, LRCK | 8, 9, 10, 16, 45 |
 | Speaker amp enable (PA_CTRL) | 46 |
 | TF card: CMD, CLK, DATA | 21, 38, 39 (card detect on 17 not connected) |
-| BOOT button (active low) | 0 |
+| BOOT button (active low, external pull-up; deep-sleep wake via ext1 since #55, to verify) | 0 |
 | KEY button (active low, external pull-up) | 18 |
 | Battery sense, ADC1_CH3, 1:3 divider | 4 |
 
