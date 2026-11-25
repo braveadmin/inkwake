@@ -56,6 +56,7 @@
 #include <esp_sleep.h>
 #include <sys/time.h>
 
+#include <climits>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -72,6 +73,7 @@
 #include "framebuffer.h"
 #include "ntp.h"
 #include "ntp_sync.h"
+#include "pcf85063.h"
 #include "portal.h"
 #include "provision.h"
 #include "qrcodegen.h"
@@ -90,7 +92,7 @@ namespace {
 constexpr int kKeyPin = 18;                   // active low, external pull-up; wakes from deep sleep
 constexpr int kAmpPin = 46;                   // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;                    // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E0020;       // changed with the RtcState layout
+constexpr uint32_t kMagic = 0x1A7E0021;       // changed with the RtcState layout
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -140,6 +142,11 @@ constexpr char kPrefWifiPass[] = "wifi_pass";
 constexpr char kPrefNtpServer[] = "ntp_server";
 constexpr char kPrefNtpHours[] = "ntp_hours";  // uint16
 constexpr char kDefaultNtpServer[] = "pool.ntp.org";
+constexpr char kPrefRtcOffset[] = "rtc_offset";  // int8, PCF85063 offset steps (#13)
+// A sync measures the RTC's drift only if the system clock was copied from the
+// RTC this recently: while awake the system clock runs on the ESP32's own
+// crystal, which drifts on its own.
+constexpr uint32_t kTrimFreshMs = 15 * 60'000;
 constexpr uint16_t kDefaultNtpHours = 24;  // crystal drift ~2 s/day at most; ADR-0013
 constexpr uint16_t kMaxNtpHours = 168;
 constexpr size_t kSsidLen = 33;  // 32 + NUL
@@ -192,7 +199,13 @@ struct RtcState {
   uint8_t alarm_blob[kAlarmBlobMax];
   int64_t alarm_checked;  // UTC up to which due alarms were handled; 0 = not yet
   Ringer ring;            // plain data, all-zero = idle
+  // RTC drift trim (#13).
+  int8_t rtc_offset;      // offset register steps in force, copy of the NVS value
+  int64_t trim_base;      // UTC of the last sync that set the RTC exactly; 0 = none
+  int32_t drift_ppm_x10;  // last measured drift, + = RTC fast; kNoDrift = none yet
+  int64_t drift_at;       // UTC of that measurement
 };
+constexpr int32_t kNoDrift = INT32_MIN;
 // `= {}` makes this a constant initialization. Without it, FaceState's member
 // defaults can turn it into startup code that runs again on every deep-sleep
 // wake, resetting `shown` (magic survives) so each wake redrew every field.
@@ -313,14 +326,22 @@ void set_system_clock(time_t t) {
   settimeofday(&tv, nullptr);
 }
 
+// millis() when the system clock was copied from the RTC right at a second
+// edge (minute-interrupt wake), 0 = not on this boot. Other reads land
+// anywhere in the second, up to 1 s off: too coarse to measure drift.
+uint32_t g_clock_from_rtc_ms = 0;
+
 // Copies the RTC time into the system clock. On a minute-interrupt wake the
 // RTC has just turned the minute, so the lost fraction of a second is tiny.
 // No answer on I2C keeps the system clock and the previous time_set.
 rtc::Status sync_from_rtc() {
   time_t t;
   const rtc::Status s = rtc::read(t);
-  if (s == rtc::Status::Ok) set_system_clock(t);
+  if (s == rtc::Status::Ok) {
+    set_system_clock(t);
+  }
   if (s != rtc::Status::NoDevice) g_rtc.time_set = s == rtc::Status::Ok;
+  if (s == rtc::Status::TimeLost) g_rtc.trim_base = 0;
   return s;
 }
 
@@ -340,6 +361,7 @@ void set_clock(time_t now) {
   set_system_clock(now);
   g_rtc.time_set = true;
   g_rtc.alarm_checked = 0;  // a jump in time rings nothing it skipped over
+  g_rtc.trim_base = 0;      // set by hand: not exact enough to measure drift from
   // Fails if the RTC is missing, or within ~2 s of power-up while its crystal starts.
   if (!rtc::write(now)) Serial.print("RTC write failed: try `set` again\r\n");
 }
@@ -429,6 +451,45 @@ void load_ntp_config() {
   g_rtc.ntp_hours = h >= 1 && h <= kMaxNtpHours ? h : kDefaultNtpHours;
 }
 
+int8_t load_rtc_offset() {
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, true)) return 0;
+  const int8_t v = prefs.getChar(kPrefRtcOffset, 0);
+  prefs.end();
+  return v >= pcf85063::kOffsetMin && v <= pcf85063::kOffsetMax ? v : 0;
+}
+
+// Writes the offset to the chip and NVS. The drift measured so far was taken
+// with the old value, so measuring starts again at the next sync.
+bool set_rtc_offset(int steps) {
+  g_rtc.trim_base = 0;
+  if (!rtc::set_offset(steps)) return false;
+  g_rtc.rtc_offset = static_cast<int8_t>(steps);
+  Preferences prefs;
+  if (!prefs.begin(kPrefsNamespace, false)) return false;
+  const bool ok = prefs.putChar(kPrefRtcOffset, static_cast<int8_t>(steps)) == 1;
+  prefs.end();
+  return ok;
+}
+
+// After a good sync, before the time is corrected: compares the RTC with NTP
+// time since the previous exact sync and trims the offset register if it drifted.
+void measure_drift(int64_t ntp_offset_us) {
+  const int64_t now = time(nullptr);
+  if (g_rtc.trim_base == 0 || g_clock_from_rtc_ms == 0 ||
+      millis() - g_clock_from_rtc_ms > kTrimFreshMs || now <= g_rtc.trim_base) {
+    return;
+  }
+  const int64_t elapsed = now - g_rtc.trim_base;
+  const int64_t rtc_error_us = -ntp_offset_us;  // the sync adds offset: RTC was ahead by -offset
+  if (elapsed >= pcf85063::kTrimMinSpanS) {
+    g_rtc.drift_ppm_x10 = static_cast<int32_t>(rtc_error_us * 10 / elapsed);
+    g_rtc.drift_at = now;
+  }
+  int next;
+  if (pcf85063::trim_offset(g_rtc.rtc_offset, rtc_error_us, elapsed, next)) set_rtc_offset(next);
+}
+
 int64_t ntp_interval_s() {
   const uint16_t h = g_rtc.ntp_hours != 0 ? g_rtc.ntp_hours : kDefaultNtpHours;
   return static_cast<int64_t>(h) * 3600;
@@ -468,7 +529,9 @@ char run_ntp_sync() {
   memset(&nets, 0, sizeof nets);
   bool ok = r.status == ntp_sync::Status::Ok;
   if (ok) {
+    measure_drift(r.offset_us);
     ok = apply_ntp_offset(r.offset_us);
+    g_rtc.trim_base = ok ? time(nullptr) : 0;
     g_rtc.ntp_offset_ms = static_cast<int32_t>(r.offset_us / 1000);
     g_rtc.ntp_rtt_ms = static_cast<uint16_t>(r.rtt_us / 1000);
   }
@@ -953,6 +1016,37 @@ void print_time() {
   Serial.print("\r\n");
 }
 
+// x10 value as "-1.5"
+void fmt_tenths(char* buf, size_t n, int32_t v) {
+  snprintf(buf, n, "%s%ld.%ld", v < 0 ? "-" : "", static_cast<long>((v < 0 ? -v : v) / 10),
+           static_cast<long>((v < 0 ? -v : v) % 10));
+}
+
+void print_drift() {
+  int chip = 0;
+  const bool read_ok = rtc::read_offset(chip);
+  Serial.printf("offset %d steps (%s %.1f ppm)", g_rtc.rtc_offset,
+                g_rtc.rtc_offset >= 0 ? "slows by" : "speeds up by",
+                (g_rtc.rtc_offset >= 0 ? 1 : -1) * g_rtc.rtc_offset * pcf85063::kOffsetStepPpm);
+  if (!read_ok) {
+    Serial.print(", chip not readable");
+  } else if (chip != g_rtc.rtc_offset) {
+    Serial.printf(", chip has %d", chip);
+  }
+  Serial.print("\r\n");
+  if (g_rtc.drift_ppm_x10 != kNoDrift) {
+    char ppm[16];
+    fmt_tenths(ppm, sizeof ppm, g_rtc.drift_ppm_x10);
+    const int32_t ms_day =
+        static_cast<int32_t>(static_cast<int64_t>(g_rtc.drift_ppm_x10) * 864 / 100);
+    print_stamp("drift measured", static_cast<time_t>(g_rtc.drift_at));
+    Serial.printf(": %s ppm (%ld ms/day, + = fast)\r\n", ppm, static_cast<long>(ms_day));
+  } else {
+    Serial.print(
+        "drift: not measured yet (needs two NTP syncs at least 12 h apart on battery)\r\n");
+  }
+}
+
 void print_rtc() {
   time_t t = 0;
   const rtc::Status s = rtc::read(t);
@@ -963,6 +1057,7 @@ void print_rtc() {
     Serial.printf("rtc  %s\r\n", rtc::status_name(s));
   }
   print_time();
+  print_drift();
   Serial.printf(
       "wakes %lu: rtc interrupt %lu, fallback timer %lu, rtc read errors %lu\r\n"
       "GPIO15 (RTC INT): %s\r\n",
@@ -1413,6 +1508,20 @@ void handle_line(const String& line) {
     update_display(true);
   } else if (line == "rtc") {
     print_rtc();
+  } else if (line == "rtc offset" || line.startsWith("rtc offset ")) {
+    String arg = line.substring(10);
+    arg.trim();
+    int n;
+    char extra;
+    if (arg.length() > 0) {
+      if (sscanf(arg.c_str(), "%d %c", &n, &extra) != 1 || n < pcf85063::kOffsetMin ||
+          n > pcf85063::kOffsetMax) {
+        Serial.print("rtc offset takes -64 to 63 steps of 4.34 ppm, + slows the clock\r\n");
+        return;
+      }
+      if (!set_rtc_offset(n)) Serial.print("could not write the offset\r\n");
+    }
+    print_drift();
   } else if (line == "alarm" || line == "alarms" || line.startsWith("alarm ")) {
     handle_alarm(line == "alarms" ? String("alarm") : line);
   } else if (line == "tz" || line.startsWith("tz ")) {
@@ -1524,6 +1633,9 @@ void setup() {
     if (cause == ESP_SLEEP_WAKEUP_TIMER) g_rtc.timer_wakes++;
     rtc_status = sync_from_rtc();
     if (rtc_status == rtc::Status::NoDevice) g_rtc.rtc_errors++;
+    if (rtc_status == rtc::Status::Ok && (ext1 & (1ULL << rtc::kIntPin))) {
+      g_clock_from_rtc_ms = millis() | 1;  // | 1: never 0
+    }
     finish_temp(temp_started);
     measure_battery();
     const bool reinit =
@@ -1582,6 +1694,10 @@ void setup() {
     load_tz();
     load_ntp_config();
     load_alarms();
+    // The offset register is lost with power; a reset keeps it, but write it anyway.
+    g_rtc.rtc_offset = load_rtc_offset();
+    g_rtc.drift_ppm_x10 = kNoDrift;
+    rtc::set_offset(g_rtc.rtc_offset);
     finish_temp(temp_started);
     measure_battery();
     rtc_status = sync_from_rtc();
