@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-23
 - Amended by ADR-0018 (2026-11-25): alarms also edited with KEY + BOOT in the button menu (#55); KEY held 2 s on the face opens the menu unless an alarm is snoozed.
+- Amended 2026-11-25 (#43): the beep volume is set per alarm (level 1-10, rising or steady).
 
 ## Context
 
@@ -14,7 +15,7 @@ F1 (#2) brings any number of alarms (cap 16) with label, time, weekday mask, sou
 - **Clock changes:** an alarm in the skipped spring hour rings at the jump (02:30 rings at 03:00). In the repeated autumn hour it rings once, at the first instance.
 - **Missed alarms** are skipped, never rung late: an alarm counts as due only up to 2 min after its time. This covers time not set, the board switched off, or a jump from `set`.
 - **One-shot alarms** (no weekdays) turn themselves off after ringing.
-- **Sound until F3:** a generated 2 kHz beep pattern (four short beeps, a pause) through the on-board ES8311 codec and speaker (ADR-0006). It starts at about -20 dBFS and rises 5 % every 20 s to about -4 dBFS. F3 replaces it with the wake sequence and keeps it as the fallback if the TF card fails.
+- **Sound until F3:** a generated 2 kHz beep pattern (four short beeps, a pause) through the on-board ES8311 codec and speaker (ADR-0006). It starts at about -20 dBFS and rises 5 % every 20 s to about -4 dBFS. Since #43 each alarm has a volume level 1-10 and a ramp switch: the top is 50 + 5 x level % on the 0-100 % scale (-40..0 dBFS, so level 1 is about -18 dBFS, 8 = the -4 dBFS above, 10 = 0 dBFS); "rising" starts 40 % below the top and climbs 5 % every 20 s, "steady" rings at the top at once. New alarms and alarms saved before #43 (NVS blob version 1) get level 8, rising, so they ring as before. There is no level 0, so an alarm can't be made silent; values outside 1-10 are refused, not clamped. Volume is per alarm (blob version 2 adds the byte) because F3's per-alarm sound will carry it too. Edited in the alarm editor's second page (button menu), with serial `alarm volume ID N` / `alarm ramp ID on|off`, and on the setup page; trying a level without saving: `alarm beep N`, the page's Test button, and a short beep on each change in the button menu. F3 replaces it with the wake sequence and keeps it as the fallback if the TF card fails.
 - **Input until F2:** KEY tap = snooze 9 min (at most 3), KEY held 2 s = stop. While snoozed, KEY held 2 s stops it too. F2 puts the same gestures on the top pad.
 - **Unattended:** 10 min ringing without input auto-snoozes. After the third snooze it rings once more for 10 min, then gives up.
 - **The board stays awake while ringing**, with the minute's display update and beeps in the same loop. A snooze sleeps with a timer that ends it on time, not on the next minute wake.
@@ -34,4 +35,4 @@ F1 (#2) brings any number of alarms (cap 16) with label, time, weekday mask, sou
 
 - The scheduler is unit-tested on the host, including DST nights; the ES8311 register sequence (taken from Espressif's esp_codec_dev, as in Waveshare's audio example) is checked on the board only.
 - Sound name and sunrise minutes are stored and edited later (F3, F4); they have no effect yet.
-- Volume levels and the beep pattern are starting points, to tune by ear on the board.
+- The level scale (55-100 %) and the beep pattern are starting points, to tune by ear on the board. Firmware from before #43 can't read a version 2 blob and starts with no alarms after a downgrade.

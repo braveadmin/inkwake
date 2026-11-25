@@ -193,8 +193,17 @@ const char* Menu::boot_label() const {
     case Screen::DateTime:
       return "+1";
     case Screen::AlarmEdit:
-      if (edit_.field() == AlarmField::Hour || edit_.field() == AlarmField::Minute) return "+1";
-      return edit_.field() == AlarmField::Days ? "Change" : "On/off";
+      switch (edit_.field()) {
+        case AlarmField::Hour:
+        case AlarmField::Minute:
+        case AlarmField::Volume:
+          return "+1";
+        case AlarmField::Days:
+        case AlarmField::Ramp:
+          return "Change";
+        default:
+          return "On/off";
+      }
     default:
       return "Choose";
   }
@@ -254,10 +263,10 @@ Action Menu::handle_editor(Input in) {
   }
   if (dt) {
     increment(value_, field_);
-  } else {
-    edit_.increment();
+    return Action::None;
   }
-  return Action::None;
+  edit_.increment();
+  return edit_.field() == AlarmField::Volume ? Action::PlayVolume : Action::None;
 }
 
 // KEY held, a Back / Close row, or an editor's Cancel: one level up, nothing saved.
@@ -400,6 +409,8 @@ Action Menu::save_edit() {
   a.hour = edit_.hour();
   a.minute = edit_.minute();
   a.days = edit_.days();
+  a.volume = edit_.volume();
+  a.ramp = edit_.ramp();
   a.enabled = true;
   adding_ = false;
   show(Screen::Alarms, alarm_);

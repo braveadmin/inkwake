@@ -128,11 +128,35 @@ void test_ringer_unattended_auto_snoozes_then_gives_up() {
   TEST_ASSERT_EQUAL(RingState::Idle, r.state);
 }
 
+void test_volume_levels() {
+  TEST_ASSERT_EQUAL_UINT8(55, volume_pct(1));
+  TEST_ASSERT_EQUAL_UINT8(90, volume_pct(kDefaultVolume));
+  TEST_ASSERT_EQUAL_UINT8(100, volume_pct(10));
+  TEST_ASSERT_EQUAL_UINT8(55, volume_pct(0));    // never silent
+  TEST_ASSERT_EQUAL_UINT8(100, volume_pct(11));  // never past full
+  const Alarm a;
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, a.volume);
+  TEST_ASSERT_TRUE(a.ramp);
+}
+
 void test_ring_volume_ramps_and_caps() {
-  TEST_ASSERT_EQUAL_UINT8(5, ring_volume(0, 5, 40));
-  TEST_ASSERT_EQUAL_UINT8(5, ring_volume(19, 5, 40));
-  TEST_ASSERT_EQUAL_UINT8(10, ring_volume(20, 5, 40));
-  TEST_ASSERT_EQUAL_UINT8(40, ring_volume(600, 5, 40));
+  // Default level 8 keeps the behaviour before #43: 50 % -> 90 %.
+  TEST_ASSERT_EQUAL_UINT8(50, ring_volume(0, kDefaultVolume, true));
+  TEST_ASSERT_EQUAL_UINT8(50, ring_volume(19, kDefaultVolume, true));
+  TEST_ASSERT_EQUAL_UINT8(55, ring_volume(20, kDefaultVolume, true));
+  TEST_ASSERT_EQUAL_UINT8(85, ring_volume(140, kDefaultVolume, true));
+  TEST_ASSERT_EQUAL_UINT8(90, ring_volume(160, kDefaultVolume, true));
+  TEST_ASSERT_EQUAL_UINT8(90, ring_volume(600, kDefaultVolume, true));
+  TEST_ASSERT_EQUAL_UINT8(15, ring_volume(0, 1, true));
+  TEST_ASSERT_EQUAL_UINT8(55, ring_volume(600, 1, true));
+  TEST_ASSERT_EQUAL_UINT8(60, ring_volume(0, 10, true));
+  TEST_ASSERT_EQUAL_UINT8(100, ring_volume(UINT32_MAX, 10, true));
+}
+
+void test_ring_volume_steady() {
+  TEST_ASSERT_EQUAL_UINT8(70, ring_volume(0, 4, false));
+  TEST_ASSERT_EQUAL_UINT8(70, ring_volume(600, 4, false));
+  TEST_ASSERT_EQUAL_UINT8(100, ring_volume(0, 10, false));
 }
 
 void test_beep_pattern() {
@@ -163,7 +187,9 @@ int main(int, char**) {
   RUN_TEST(test_ringer_max_snoozes_keeps_ringing);
   RUN_TEST(test_ringer_dismiss);
   RUN_TEST(test_ringer_unattended_auto_snoozes_then_gives_up);
+  RUN_TEST(test_volume_levels);
   RUN_TEST(test_ring_volume_ramps_and_caps);
+  RUN_TEST(test_ring_volume_steady);
   RUN_TEST(test_beep_pattern);
   return UNITY_END();
 }

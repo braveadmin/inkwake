@@ -191,6 +191,8 @@ void test_codec_round_trip() {
   v[0].label = "Work";
   v[0].sunrise_minutes = 20;
   v[1].sound = "birds";
+  v[1].volume = 3;
+  v[1].ramp = false;
   const auto blob = encode(v);
   std::vector<Alarm> out;
   TEST_ASSERT_TRUE(decode(blob.data(), blob.size(), out));
@@ -201,6 +203,42 @@ void test_codec_round_trip() {
   TEST_ASSERT_FALSE(out[1].enabled);
   TEST_ASSERT_EQUAL_STRING("birds", out[1].sound.c_str());
   TEST_ASSERT_EQUAL_UINT8(22, out[1].hour);
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, out[0].volume);
+  TEST_ASSERT_TRUE(out[0].ramp);
+  TEST_ASSERT_EQUAL_UINT8(3, out[1].volume);
+  TEST_ASSERT_FALSE(out[1].ramp);
+}
+
+void test_codec_reads_version_1() {
+  // A blob saved before #43: no volume byte. Rings as before, 50 % -> 90 %.
+  const std::vector<uint8_t> v1{'A', 'L', 1,   2,   1,   1,   7,   0,   kWeekdays, 0, 4,
+                                'W', 'o', 'r', 'k', 0,   2,   0,   22,  15,        0, 0,
+                                0,   7,   'd', 'e', 'f', 'a', 'u', 'l', 't'};
+  std::vector<Alarm> out;
+  TEST_ASSERT_TRUE(decode(v1.data(), v1.size(), out));
+  TEST_ASSERT_EQUAL_UINT32(2, out.size());
+  TEST_ASSERT_EQUAL_STRING("Work", out[0].label.c_str());
+  TEST_ASSERT_TRUE(out[0].enabled);
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, out[0].volume);
+  TEST_ASSERT_TRUE(out[0].ramp);
+  TEST_ASSERT_FALSE(out[1].enabled);
+  TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, out[1].volume);
+  TEST_ASSERT_TRUE(out[1].ramp);
+  TEST_ASSERT_EQUAL_STRING("default", out[1].sound.c_str());
+  // Saving it again writes version 2.
+  TEST_ASSERT_EQUAL_UINT8(2, encode(out)[2]);
+}
+
+void test_check_volume() {
+  Alarm a = make(1, 7, 0, kWeekdays);
+  a.volume = 0;
+  TEST_ASSERT_NOT_NULL(check(a));
+  a.volume = 11;
+  TEST_ASSERT_NOT_NULL(check(a));
+  a.volume = 1;
+  TEST_ASSERT_NULL(check(a));
+  a.volume = 10;
+  TEST_ASSERT_NULL(check(a));
 }
 
 void test_codec_rejects_bad_blobs() {
@@ -208,7 +246,7 @@ void test_codec_rejects_bad_blobs() {
   auto blob = encode(v);
   std::vector<Alarm> out{make(5, 1, 1, 0)};
   auto bad = blob;
-  bad[2] = 2;  // version
+  bad[2] = 3;  // version
   TEST_ASSERT_FALSE(decode(bad.data(), bad.size(), out));
   bad = blob;
   bad.pop_back();  // truncated
@@ -218,6 +256,9 @@ void test_codec_rejects_bad_blobs() {
   TEST_ASSERT_FALSE(decode(bad.data(), bad.size(), out));
   bad = blob;
   bad[6] = 25;  // hour
+  TEST_ASSERT_FALSE(decode(bad.data(), bad.size(), out));
+  bad = blob;
+  bad[10] = 0;  // volume
   TEST_ASSERT_FALSE(decode(bad.data(), bad.size(), out));
   std::vector<Alarm> dup{make(1, 7, 0, 0), make(1, 8, 0, 0)};
   bad = encode(dup);
@@ -292,6 +333,8 @@ int main(int, char**) {
   RUN_TEST(test_ids);
   RUN_TEST(test_check);
   RUN_TEST(test_codec_round_trip);
+  RUN_TEST(test_codec_reads_version_1);
+  RUN_TEST(test_check_volume);
   RUN_TEST(test_codec_rejects_bad_blobs);
   RUN_TEST(test_parse_time);
   RUN_TEST(test_parse_days);

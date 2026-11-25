@@ -26,6 +26,7 @@ constexpr size_t kMaxAlarms = 16;
 constexpr size_t kMaxLabel = 23;  // bytes (UTF-8)
 constexpr size_t kMaxSound = 15;
 constexpr int64_t kMaxLateS = 120;
+constexpr size_t kBlobFixed = 9;  // bytes per alarm in encode() besides label and sound
 
 // First instant strictly after `after_utc` at which `a` fires. nullopt when
 // disabled.
@@ -81,8 +82,10 @@ std::optional<size_t> find(const std::vector<Alarm>& alarms, uint8_t id);
 // otherwise a short English reason.
 const char* check(const Alarm& a);
 
-// NVS blob: "AL", version 1, count, then per alarm id, flags (bit0 enabled),
-// hour, minute, days, sunrise_minutes, label length + bytes, sound length + bytes.
+// NVS blob: "AL", version 2, count, then per alarm id, flags (bit0 enabled,
+// bit1 ramp), hour, minute, days, sunrise_minutes, volume, label length +
+// bytes, sound length + bytes. Version 1 (before #43, no volume byte, ramp
+// bit unused) still decodes, with the default volume and ramp.
 std::vector<uint8_t> encode(const std::vector<Alarm>& alarms);
 // False on a bad header, version, length or field; `out` is then untouched.
 bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out);

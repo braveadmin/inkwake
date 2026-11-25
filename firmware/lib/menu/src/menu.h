@@ -10,7 +10,8 @@
 //   Date & time: year, month, day, hour, minute, then Save, Cancel
 //   Alarms:      one row per alarm, "Add alarm" (hidden at kMaxAlarms), Back
 //   Alarm:       Edit, Turn off / Turn on, Delete, Back
-//   Alarm editor: hour, minute, days (+ Mon..Sun with Custom), then Save, Cancel
+//   Alarm editor: hour, minute, days (+ Mon..Sun with Custom), volume, rising
+//                 or steady, then Save, Cancel
 //   Delete:      Cancel, Delete  (confirmation, Cancel first)
 //   Timezone:    preset list (plus "Custom" while a zone not in it is set), Back
 //   Wi-Fi:       Set up Wi-Fi, Forget all networks (only with one saved), Back
@@ -68,6 +69,7 @@ enum class Action : uint8_t {
   WifiSetup,     // open the Wi-Fi setup page; the menu is closed
   WifiForget,    // forget all networks; the menu is back on the main list
   SaveAlarms,    // alarms() is the whole list to save (added, edited, toggled or deleted)
+  PlayVolume,    // the editor's volume changed: play a short beep at alarm_edit().volume()
 };
 
 struct Context {
@@ -101,7 +103,8 @@ class Menu {
   const char* key_label() const;       // KEY tap: "Next"
   const char* key_hold_label() const;  // KEY held, e.g. "hold: back"
   const char* boot_label() const;      // BOOT: "Open", "+1", "Save", "Back", ...
-  // BOOT held repeats Act here: on hour, minute and the date fields only.
+  // BOOT held repeats Act here: on hour, minute and the date fields only (not
+  // on the volume, where each press plays a beep).
   bool repeats() const;
 
   // List screens (all but the two editors); the last row may be Back / Close.

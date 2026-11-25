@@ -115,6 +115,7 @@ const char* check(const Alarm& a) {
   if (a.label.size() > kMaxLabel) return "label too long";
   if (a.sound.size() > kMaxSound) return "sound name too long";
   if (a.sunrise_minutes > 60) return "sunrise over 60 min";
+  if (a.volume < kMinVolume || a.volume > kMaxVolume) return "volume 1-10";
   for (char ch : a.label) {
     if (static_cast<unsigned char>(ch) < 0x20) return "control character in label";
   }
@@ -122,10 +123,10 @@ const char* check(const Alarm& a) {
 }
 
 std::vector<uint8_t> encode(const std::vector<Alarm>& alarms) {
-  std::vector<uint8_t> b{'A', 'L', 1, static_cast<uint8_t>(alarms.size())};
+  std::vector<uint8_t> b{'A', 'L', 2, static_cast<uint8_t>(alarms.size())};
   for (const Alarm& a : alarms) {
-    b.insert(b.end(), {a.id, static_cast<uint8_t>(a.enabled ? 1 : 0), a.hour, a.minute, a.days,
-                       a.sunrise_minutes});
+    const auto flags = static_cast<uint8_t>((a.enabled ? 1 : 0) | (a.ramp ? 2 : 0));
+    b.insert(b.end(), {a.id, flags, a.hour, a.minute, a.days, a.sunrise_minutes, a.volume});
     b.push_back(static_cast<uint8_t>(a.label.size()));
     b.insert(b.end(), a.label.begin(), a.label.end());
     b.push_back(static_cast<uint8_t>(a.sound.size()));
@@ -135,7 +136,10 @@ std::vector<uint8_t> encode(const std::vector<Alarm>& alarms) {
 }
 
 bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out) {
-  if (len < 4 || data[0] != 'A' || data[1] != 'L' || data[2] != 1) return false;
+  if (len < 4 || data[0] != 'A' || data[1] != 'L') return false;
+  const uint8_t version = data[2];
+  if (version != 1 && version != 2) return false;
+  const size_t fixed = version == 1 ? 6 : 7;  // v1 (before #43) has no volume byte
   const size_t n = data[3];
   if (n > kMaxAlarms) return false;
   std::vector<Alarm> v;
@@ -149,7 +153,7 @@ bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out) {
     return true;
   };
   for (size_t i = 0; i < n; ++i) {
-    if (p + 6 > len) return false;
+    if (p + fixed > len) return false;
     Alarm a;
     a.id = data[p];
     a.enabled = data[p + 1] & 1;
@@ -157,7 +161,11 @@ bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out) {
     a.minute = data[p + 3];
     a.days = data[p + 4];
     a.sunrise_minutes = data[p + 5];
-    p += 6;
+    if (version >= 2) {  // v1 keeps the defaults: level 8, rising (50 % -> 90 %)
+      a.ramp = data[p + 1] & 2;
+      a.volume = data[p + 6];
+    }
+    p += fixed;
     if (!str(a.label, kMaxLabel) || !str(a.sound, kMaxSound)) return false;
     if (check(a) || find(v, a.id)) return false;
     v.push_back(a);
