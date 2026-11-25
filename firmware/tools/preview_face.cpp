@@ -19,6 +19,7 @@
 //   ./preview face.pbm 7 5 2 18 11 215 --regions
 //   (hour minute weekday[0=Mon] day month temp_dc; temp_dc -32768 = no reading)
 //   ./preview menu.pbm --menu date3
+//   python3 tools/pbm2png.py face.pbm face.png   (PNG for READMEs and PRs)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
