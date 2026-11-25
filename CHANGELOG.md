@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0](https://github.com/braveadmin/inkwake/compare/v0.1.0...v0.2.0) (2026-11-25)
+
+
+### Features
+
+* **menu:** alarm editor in the button menu, BOOT skips the next ring ([#55](https://github.com/braveadmin/inkwake/issues/55)) ([#58](https://github.com/braveadmin/inkwake/issues/58)) ([6006a2b](https://github.com/braveadmin/inkwake/commit/6006a2b1a9a0231477f7d7c84dab7bcc5ef2a74c))
+* **menu:** button menu and first-start time setting ([#41](https://github.com/braveadmin/inkwake/issues/41), [#34](https://github.com/braveadmin/inkwake/issues/34)) ([#56](https://github.com/braveadmin/inkwake/issues/56)) ([a0dcb5a](https://github.com/braveadmin/inkwake/commit/a0dcb5af59b8eb23948170530b3c0bbaa0598b74))
+* **rtc:** trim crystal drift with the PCF85063 offset register ([#13](https://github.com/braveadmin/inkwake/issues/13)) ([#52](https://github.com/braveadmin/inkwake/issues/52)) ([8780c97](https://github.com/braveadmin/inkwake/commit/8780c9745abe5b613797f12f29635050c9198a20))
+
 ## 0.1.0 (2026-11-24)
 
 
