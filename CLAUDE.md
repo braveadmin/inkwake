@@ -49,6 +49,7 @@ Full map: hardware/wiring.md. Source of truth for Waveshare details: github.com/
 | I2C (SHTC3, PCF85063) | SDA 13, SCL 14, PCF85063 at 0x51; RTC interrupt GPIO15, open drain, used as minute wake; **no external pull-up** on the board, the internal RTC pull-up in deep sleep works (verified 2026-11-18). RTC loses its time when the board is unpowered (no backup cell); after power-up its crystal needs up to ~2 s before a time write sticks |
 | Speaker amp enable | GPIO46, hold low in sleep |
 | Touch | GPIO1/2/3: idle ~26k, bare finger +100k..1M, noise ±20, neighbour crosstalk up to +2k. S3 deep sleep wakes on one touch channel only (to confirm) |
+| Button positions | Top edge, seen from the front: KEY, PWR, BOOT, ~10 mm apart, slightly right of centre; panel x ~160, 208, 255 (from a photo 2026-11-25; menu labels use these, lib/display menu_screen.h) |
 | Free header pins | GPIO1, 2, 3, 17 (LEDs), 43/44; GPIO18 is KEY |
 
 ## Conventions

@@ -12,12 +12,12 @@ namespace inkwake {
 
 constexpr size_t kListRows = 5;  // items visible at once; longer lists scroll
 
-// The board's buttons sit on the top edge, centred, about 6 mm apart (KEY,
-// PWR, BOOT from the left, seen from the front). Panel x of their centres at
-// ~4.7 px/mm; adjust here if the arrows don't line up.
-constexpr int kKeyButtonX = 172;
-constexpr int kPwrButtonX = 200;
-constexpr int kBootButtonX = 228;
+// The board's buttons sit on the top edge (KEY, PWR, BOOT from the left, seen
+// from the front), about 10 mm apart and a little right of centre. Panel x of
+// their centres, measured from a photo of the board (2026-11-25).
+constexpr int kKeyButtonX = 160;
+constexpr int kPwrButtonX = 208;
+constexpr int kBootButtonX = 255;
 constexpr int kButtonLabelGap = 14;  // label text keeps this far from the arrow's centre
 
 // What each button does on the current screen. KEY's text ends left of KEY,

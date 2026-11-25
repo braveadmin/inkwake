@@ -36,6 +36,6 @@ Until now the time could only be set over USB serial (`set`) or through Wi-Fi se
 ## Consequences
 
 - The clock is usable with no Wi-Fi at all; Wi-Fi becomes an extra.
-- Two buttons and hold gestures need labels on every menu screen. They are drawn along the top edge right next to the buttons (KEY, PWR, BOOT from the left, centred, ~6 mm apart), with a small arrow at KEY and BOOT, instead of naming the buttons, since the board's silkscreen names mean nothing to a user. The button positions and the timings are first guesses to check on the board (#41).
+- Two buttons and hold gestures need labels on every menu screen. They are drawn along the top edge right next to the buttons (KEY, PWR, BOOT from the left, ~10 mm apart, a little right of centre: panel x 160, 208, 255, measured from a photo), with a small arrow at KEY and BOOT, instead of naming the buttons, since the board's silkscreen names mean nothing to a user. The button positions and the timings are first guesses to check on the board (#41).
 - Each later setting (alarms #55, volume #43) is a menu item plus a page section on the web UI; the two edit the same NVS keys.
 - Amends ADR-0015 (KEY + BOOT is the main input until the pads exist), ADR-0016 (first boot no longer opens setup, #34) and ADR-0017 (alarms editable with the buttons, #55).
