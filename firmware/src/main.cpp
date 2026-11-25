@@ -1210,7 +1210,9 @@ char run_menu(menu::Menu& m, bool verbose) {
         last_press = millis();
       }
     }
-    if (now - last_press >= menu::kIdleMs) break;  // closes without saving
+    // millis(), not `now`: a volume beep above sets last_press after `now`,
+    // and `now - last_press` would wrap around and close the menu.
+    if (millis() - last_press >= menu::kIdleMs) break;  // closes without saving
     if (now - alarm_check >= 1000) {
       alarm_check = now;
       check_alarms();
