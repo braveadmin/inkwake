@@ -3,7 +3,6 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstring>
 
 #include "font.h"
 #include "fonts/text20.h"
@@ -14,17 +13,21 @@ namespace inkwake {
 
 namespace {
 
-constexpr int kTitleBaseline = 36;
-constexpr int kHintBaseline = 288;
-constexpr int kListTop = 52;
-constexpr int kRowH = 44;
-constexpr int kRowTextDy = 32;  // baseline below the row top
+// Button labels: two lines of 20 px text along the top edge.
+constexpr int kLabelBaseline1 = 22;
+constexpr int kLabelBaseline2 = 42;
+constexpr int kArrowH = 8;  // arrow under each button, tip at y 0
+
+constexpr int kTitleBaseline = 82;
+constexpr int kListTop = 92;
+constexpr int kRowH = 41;
+constexpr int kRowTextDy = 30;  // baseline below the row top
 constexpr int kRowMargin = 8;   // bar inset from the screen edges
 constexpr int kRowTextX = 24;
 
-constexpr int kDateBaseline = 120;
-constexpr int kWeekdayBaseline = 154;
-constexpr int kTimeBaseline = 238;
+constexpr int kDateBaseline = 152;
+constexpr int kWeekdayBaseline = 182;
+constexpr int kTimeBaseline = 268;
 constexpr int kDigitGap = 2;  // between digits of one field
 constexpr int kSepPad = 6;    // either side of "-" and ":"
 constexpr int kMarkPad = 5;   // black mark around a field's digits
@@ -110,11 +113,27 @@ void draw_row(Framebuffer& fb, const Piece (&row)[N], const int* values, int mar
   }
 }
 
-void draw_title_and_hint(Framebuffer& fb, const char* title, const char* hint) {
-  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTitleBaseline, title);
-  if (hint != nullptr) {
-    draw_text_centered(fb, fonts::kText20, Framebuffer::kWidth / 2, kHintBaseline, hint);
+// Upward arrow with its tip on the top edge at x.
+void draw_arrow(Framebuffer& fb, int x) {
+  for (int k = 0; k < kArrowH; ++k) fb.fill(Rect{x - k, k, 2 * k + 1, 1}, true);
+}
+
+void draw_buttons_and_title(Framebuffer& fb, const char* title, const ButtonLabels& b) {
+  draw_arrow(fb, kKeyButtonX);
+  draw_arrow(fb, kBootButtonX);
+  const int key_right = kKeyButtonX - kButtonLabelGap;
+  if (b.key != nullptr) {
+    draw_text(fb, fonts::kText20, key_right - text_width(fonts::kText20, b.key), kLabelBaseline1,
+              b.key);
   }
+  if (b.key_hold != nullptr) {
+    draw_text(fb, fonts::kText20, key_right - text_width(fonts::kText20, b.key_hold),
+              kLabelBaseline2, b.key_hold);
+  }
+  if (b.boot != nullptr) {
+    draw_text(fb, fonts::kText20, kBootButtonX + kButtonLabelGap, kLabelBaseline1, b.boot);
+  }
+  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTitleBaseline, title);
 }
 
 }  // namespace
@@ -126,9 +145,9 @@ size_t list_first_row(size_t count, size_t selected) {
 }
 
 void render_list(Framebuffer& fb, const char* title, const char* const* items, size_t count,
-                 size_t selected, const char* hint) {
+                 size_t selected, const ButtonLabels& buttons) {
   fb.clear();
-  draw_title_and_hint(fb, title, hint);
+  draw_buttons_and_title(fb, title, buttons);
   const size_t first = list_first_row(count, selected);
   for (size_t row = 0; row < kListRows && first + row < count; ++row) {
     const size_t i = first + row;
@@ -156,9 +175,10 @@ Rect datetime_field_rect(int field) {
   return Rect{};
 }
 
-void render_datetime(Framebuffer& fb, const char* title, const DateTimeView& v, const char* hint) {
+void render_datetime(Framebuffer& fb, const char* title, const DateTimeView& v,
+                     const ButtonLabels& buttons) {
   fb.clear();
-  draw_title_and_hint(fb, title, hint);
+  draw_buttons_and_title(fb, title, buttons);
   const int values[] = {v.year, v.month, v.day, v.hour, v.minute};
   draw_row(fb, kDateRow, values, v.field, kDateBaseline);
   draw_row(fb, kTimeRow, values, v.field, kTimeBaseline);

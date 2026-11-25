@@ -89,26 +89,43 @@ const char* Menu::title() const {
   }
 }
 
-const char* Menu::hint() const {
+const char* Menu::key_label() const {
   switch (screen_) {
     case Screen::Main:
-      return "BOOT: next   KEY: open   hold KEY: close";
-    case Screen::DateTime: {
-      const bool last = static_cast<int>(field_) == kFieldCount - 1;
-      if (datetime_alone_) {
-        return last ? "BOOT: +1   KEY: save   hold KEY: close"
-                    : "BOOT: +1   KEY: next   hold KEY: close";
-      }
-      return last ? "BOOT: +1   KEY: save   hold KEY: back"
-                  : "BOOT: +1   KEY: next   hold KEY: back";
-    }
+      return "Open";
+    case Screen::DateTime:
+      return static_cast<int>(field_) == kFieldCount - 1 ? "Save" : "Next";
     case Screen::Timezone:
-      return "BOOT: next   KEY: save   hold KEY: back";
+      return "Save";
     case Screen::Wifi:
     case Screen::WifiForget:
-      return "BOOT: next   KEY: choose   hold KEY: back";
+      return "Choose";
     default:
       return "";
+  }
+}
+
+const char* Menu::key_hold_label() const {
+  switch (screen_) {
+    case Screen::Closed:
+      return "";
+    case Screen::Main:
+      return "hold: close";
+    case Screen::DateTime:
+      return datetime_alone_ ? "hold: close" : "hold: back";
+    default:
+      return "hold: back";
+  }
+}
+
+const char* Menu::boot_label() const {
+  switch (screen_) {
+    case Screen::Closed:
+      return "";
+    case Screen::DateTime:
+      return "+1";
+    default:
+      return "Next";
   }
 }
 

@@ -57,12 +57,13 @@ static void draw_menu(Framebuffer& fb, const char* name) {
     const menu::DateTime& v = m.value();
     render_datetime(fb, m.title(),
                     {v.year, v.month, v.day, v.hour, v.minute, static_cast<int>(m.field())},
-                    m.hint());
+                    {m.key_label(), m.key_hold_label(), m.boot_label()});
     return;
   }
   const char* items[menu::kTzPresetCount + 1];
   for (size_t i = 0; i < m.count(); ++i) items[i] = m.item(i);
-  render_list(fb, m.title(), items, m.count(), m.selected(), m.hint());
+  render_list(fb, m.title(), items, m.count(), m.selected(),
+              {m.key_label(), m.key_hold_label(), m.boot_label()});
 }
 
 int main(int argc, char** argv) {

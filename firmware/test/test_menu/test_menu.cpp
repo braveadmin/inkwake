@@ -10,6 +10,7 @@
 #include "fonts/text30.h"
 #include "framebuffer.h"
 #include "menu.h"
+#include "menu_screen.h"
 #include "tz.h"
 #include "tz_presets.h"
 
@@ -248,7 +249,8 @@ static void test_datetime_edit_and_save() {
   m.handle(Input::Next);  // December
   for (int i = 0; i < 3; ++i) TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Select));
   TEST_ASSERT_EQUAL(Field::Minute, m.field());
-  TEST_ASSERT_NOT_NULL(strstr(m.hint(), "save"));
+  TEST_ASSERT_EQUAL_STRING("Save", m.key_label());
+  TEST_ASSERT_EQUAL_STRING("+1", m.boot_label());
   m.handle(Input::Next);  // 14:08
   TEST_ASSERT_EQUAL(Action::SaveDateTime, m.handle(Input::Select));
   TEST_ASSERT_TRUE(m.closed());
@@ -271,7 +273,8 @@ static void test_datetime_alone_closes() {
   Menu m;
   m.open_datetime(ctx());
   TEST_ASSERT_EQUAL(Screen::DateTime, m.screen());
-  TEST_ASSERT_NOT_NULL(strstr(m.hint(), "close"));
+  TEST_ASSERT_EQUAL_STRING("Next", m.key_label());
+  TEST_ASSERT_EQUAL_STRING("hold: close", m.key_hold_label());
   m.handle(Input::Back);
   TEST_ASSERT_TRUE(m.closed());
 }
@@ -353,13 +356,18 @@ static void test_wifi_forget_needs_confirmation() {
   TEST_ASSERT_EQUAL(1, m.count());  // nothing left to forget
 }
 
-// Every title, item and hint fits the 400 px panel (hint in the 20 px font,
-// items next to the scroll arrow).
+// Every title and item fits the 400 px panel (items next to the scroll arrow);
+// KEY's labels fit left of KEY, BOOT's right of BOOT.
 static void check_fits(const Menu& m) {
   TEST_ASSERT_TRUE_MESSAGE(text_width(fonts::kText30, m.title()) <= Framebuffer::kWidth - 8,
                            m.title());
-  TEST_ASSERT_TRUE_MESSAGE(text_width(fonts::kText20, m.hint()) <= Framebuffer::kWidth - 8,
-                           m.hint());
+  const int key_room = kKeyButtonX - kButtonLabelGap - 4;
+  TEST_ASSERT_TRUE_MESSAGE(text_width(fonts::kText20, m.key_label()) <= key_room, m.key_label());
+  TEST_ASSERT_TRUE_MESSAGE(text_width(fonts::kText20, m.key_hold_label()) <= key_room,
+                           m.key_hold_label());
+  TEST_ASSERT_TRUE_MESSAGE(text_width(fonts::kText20, m.boot_label()) <=
+                               Framebuffer::kWidth - kBootButtonX - kButtonLabelGap - 4,
+                           m.boot_label());
   for (size_t i = 0; i < m.count(); ++i) {
     TEST_ASSERT_TRUE_MESSAGE(text_width(fonts::kText30, m.item(i)) <= Framebuffer::kWidth - 24 - 40,
                              m.item(i));

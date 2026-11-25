@@ -52,7 +52,10 @@ class Menu {
   Screen screen() const { return screen_; }
   bool closed() const { return screen_ == Screen::Closed; }
   const char* title() const;
-  const char* hint() const;  // button help for the bottom line
+  // What the buttons do here, drawn next to each button on the panel's top edge.
+  const char* key_label() const;       // KEY tap, e.g. "Open"
+  const char* key_hold_label() const;  // KEY held, e.g. "hold: back"
+  const char* boot_label() const;      // BOOT, e.g. "Next" or "+1"
 
   // List screens (Main, Timezone, Wifi, WifiForget).
   size_t count() const;

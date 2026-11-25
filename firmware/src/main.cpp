@@ -982,17 +982,21 @@ menu::Context menu_context() {
   return ctx;
 }
 
+ButtonLabels menu_buttons(const menu::Menu& m) {
+  return {m.key_label(), m.key_hold_label(), m.boot_label()};
+}
+
 void draw_menu(const menu::Menu& m) {
   if (m.screen() == menu::Screen::DateTime) {
     const menu::DateTime& v = m.value();
     render_datetime(g_fb, m.title(),
                     {v.year, v.month, v.day, v.hour, v.minute, static_cast<int>(m.field())},
-                    m.hint());
+                    menu_buttons(m));
   } else {
     const char* items[menu::kTzPresetCount + 1];  // the longest list
     const size_t n = m.count();
     for (size_t i = 0; i < n; ++i) items[i] = m.item(i);
-    render_list(g_fb, m.title(), items, n, m.selected(), m.hint());
+    render_list(g_fb, m.title(), items, n, m.selected(), menu_buttons(m));
   }
   g_lcd.refresh_full(g_fb);
 }
