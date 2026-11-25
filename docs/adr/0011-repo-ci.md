@@ -14,3 +14,9 @@ Polyrepo.
 ## Rationale
 
 One tag produces matching firmware, STLs and docs.
+
+## Amendment (2026-11-25)
+
+Releases attach firmware only until the case is measured and test-printed (S1/S3): the enclosure
+dimensions are still placeholders, and an STL in a release reads as ready to print. CI keeps
+building the STLs as artifacts (enclosure.yml); they return to releases with S3.
