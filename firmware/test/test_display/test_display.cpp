@@ -9,6 +9,7 @@
 #include "font.h"
 #include "fonts/text30.h"
 #include "framebuffer.h"
+#include "menu_screen.h"
 #include "panel_window.h"
 #include "qrcodegen.h"
 #include "setup_screen.h"
@@ -453,6 +454,46 @@ static void test_ringing_screen() {
   TEST_ASSERT_TRUE(ink > 1000);
 }
 
+// ---- button menu screens (#41) ---------------------------------------------------
+
+static void test_list_scrolls_around_selection() {
+  TEST_ASSERT_EQUAL(0, list_first_row(3, 2));
+  TEST_ASSERT_EQUAL(0, list_first_row(11, 0));
+  TEST_ASSERT_EQUAL(0, list_first_row(11, 2));
+  TEST_ASSERT_EQUAL(1, list_first_row(11, 3));
+  TEST_ASSERT_EQUAL(6, list_first_row(11, 8));
+  TEST_ASSERT_EQUAL(6, list_first_row(11, 10));  // the end: no empty rows
+}
+
+static void test_list_marks_selection() {
+  const char* items[] = {"One", "Two", "Three"};
+  render_list(g_fb, "Menu", items, 3, 1, {"Open", "hold: close", "Next"});
+  // Selected row is a black bar: its left margin inside the bar is black, the
+  // rows above and below are white there. Rows start at y 92, 41 px apart.
+  TEST_ASSERT_TRUE(g_fb.get(12, 92 + 41 + 4));
+  TEST_ASSERT_FALSE(g_fb.get(12, 92 + 4));
+  TEST_ASSERT_FALSE(g_fb.get(12, 92 + 2 * 41 + 4));
+  // Arrows point up at KEY and BOOT, none at PWR.
+  TEST_ASSERT_TRUE(g_fb.get(kKeyButtonX, 0));
+  TEST_ASSERT_TRUE(g_fb.get(kBootButtonX, 0));
+  TEST_ASSERT_FALSE(g_fb.get(kPwrButtonX, 0));
+}
+
+static void test_datetime_marks_field() {
+  for (int f = 0; f < 5; ++f) {
+    render_datetime(g_fb, "Date & time", {2026, 11, 25, 14, 7, f}, {"Next", "hold: back", "+1"});
+    for (int g = 0; g < 5; ++g) {
+      const Rect r = datetime_field_rect(g);
+      TEST_ASSERT_FALSE(r.empty());
+      TEST_ASSERT_TRUE(r.x >= 0 && r.y >= 0 && r.x + r.w <= Framebuffer::kWidth &&
+                       r.y + r.h <= Framebuffer::kHeight);
+      // The marked field's corner is black, the others' white.
+      TEST_ASSERT_EQUAL(f == g, g_fb.get(r.x, r.y));
+    }
+  }
+  TEST_ASSERT_TRUE(datetime_field_rect(5).empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_packing_matches_spike_formula);
@@ -476,5 +517,8 @@ int main(int, char**) {
   RUN_TEST(test_setup_screen);
   RUN_TEST(test_alarm_field);
   RUN_TEST(test_ringing_screen);
+  RUN_TEST(test_list_scrolls_around_selection);
+  RUN_TEST(test_list_marks_selection);
+  RUN_TEST(test_datetime_marks_field);
   return UNITY_END();
 }

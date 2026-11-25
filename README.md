@@ -36,9 +36,11 @@ the board by USB and open https://adafruit.github.io/Adafruit_WebSerial_ESPTool/
 | 0x10000 | `inkwake-vX.Y.Z.bin` | first install and every update |
 
 First install: Erase, then all three files. Update: only the firmware at 0x10000, without Erase
-(Erase wipes the saved Wi-Fi networks, timezone and alarms). On first start the clock opens its
-Wi-Fi setup: scan the QR code on the screen with a phone. Serial console (115200 baud):
-https://googlechromelabs.github.io/serial-terminal/, type `help`.
+(Erase wipes the saved Wi-Fi networks, timezone and alarms). On first start the clock asks for the
+timezone, date and time, set with the two buttons on the top edge (the screen labels them).
+Wi-Fi is optional: hold KEY 5 s for its setup and scan the QR code with a phone; the clock then
+keeps its time with NTP. Later, hold KEY 2 s for the menu (date & time, timezone, Wi-Fi).
+Serial console (115200 baud): https://googlechromelabs.github.io/serial-terminal/, type `help`.
 
 ## Build
 

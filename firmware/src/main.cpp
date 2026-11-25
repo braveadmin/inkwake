@@ -30,8 +30,12 @@
 // with a growing delay (lib/ntp), sooner while the time is not set. Without
 // Wi-Fi the clock just keeps running from the RTC.
 //
-// Wi-Fi setup (#20, ADR-0016): at power-on with no network saved, on KEY held
-// 5 s, or `setup` over serial, the clock opens the open network inkwake-XXXX
+// First start (#34, ADR-0018): with no time and no network saved, power-on
+// opens the timezone list and then the date & time editor (KEY held 5 s there
+// opens Wi-Fi setup instead).
+//
+// Wi-Fi setup (#20, ADR-0016): on KEY held 5 s, from the button menu, or
+// `setup` over serial, the clock opens the open network inkwake-XXXX
 // with a captive settings page and shows a QR code that joins it. Setup ends
 // when a network connects (then NTP syncs at once), after 10 min without page
 // activity, or on a KEY press. A failed sync later only shows a small Wi-Fi "!"
@@ -49,6 +53,12 @@
 // KEY held 2 s = stop; 10 min unattended = auto-snooze, gives up after the
 // third snooze. A snooze sleeps with a timer that ends it on time. The next
 // alarm (or the snooze end) shows on the bottom line of the face.
+//
+// Button menu (#41, ADR-0018): KEY held 2 s on the face opens a menu drawn on
+// the panel (date & time, timezone, Wi-Fi), worked with KEY and BOOT, so the
+// clock can be set with no Wi-Fi and no serial. BOOT is a strapping pin and is
+// only read while awake. While the face shows "Time not set", a KEY tap opens
+// the date & time editor. The menu closes without saving after 60 s without a press.
 #include <Arduino.h>
 #include <Preferences.h>
 #include <driver/gpio.h>
@@ -69,8 +79,11 @@
 #include "alarm_sched.h"
 #include "audio.h"
 #include "battery.h"
+#include "button.h"
 #include "clock_face.h"
 #include "framebuffer.h"
+#include "menu.h"
+#include "menu_screen.h"
 #include "ntp.h"
 #include "ntp_sync.h"
 #include "pcf85063.h"
@@ -83,6 +96,7 @@
 #include "shtc3.h"
 #include "st7305.h"
 #include "tz.h"
+#include "tz_presets.h"
 #include "wifi_list.h"
 
 using namespace inkwake;
@@ -90,6 +104,7 @@ using namespace inkwake;
 namespace {
 
 constexpr int kKeyPin = 18;                   // active low, external pull-up; wakes from deep sleep
+constexpr int kBootPin = 0;                   // active low, external pull-up; read only while awake
 constexpr int kAmpPin = 46;                   // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;                    // battery sense, 1:3 divider
 constexpr uint32_t kMagic = 0x1A7E0021;       // changed with the RtcState layout
@@ -128,14 +143,13 @@ constexpr uint8_t kReinit = 0xFE;  // panel reset + init + full frame
 constexpr uint8_t kDefaultReinitMin = 60;
 constexpr St7305::WriteMode kDefaultPanelMode = St7305::WriteMode::LowPower;
 constexpr uint32_t kTempPeriodMs = 60'000;      // while awake on USB
-constexpr uint32_t kKeyHoldMs = 5'000;          // KEY held this long opens Wi-Fi setup
 constexpr uint32_t kSetupIdleMs = 10 * 60'000;  // setup closes after this without page activity
 constexpr char kPrefsNamespace[] = "inkwake";
-constexpr char kPrefTempOffset[] = "temp_off";               // int16, tenths of a degree C
-constexpr char kPrefTz[] = "tz";                             // POSIX TZ string
-constexpr size_t kTzLen = 64;                                // including the terminating NUL
-constexpr char kDefaultTz[] = "CET-1CEST,M3.5.0,M10.5.0/3";  // Central Europe
-constexpr char kPrefWifiList[] = "wifi_list";                // blob, provision::encode (#33)
+constexpr char kPrefTempOffset[] = "temp_off";  // int16, tenths of a degree C
+constexpr char kPrefTz[] = "tz";                // POSIX TZ string
+constexpr size_t kTzLen = 64;                   // including the terminating NUL
+using menu::kDefaultTz;                         // Central Europe
+constexpr char kPrefWifiList[] = "wifi_list";   // blob, provision::encode (#33)
 // Single network saved by firmware before #33: moved into the list on first load.
 constexpr char kPrefWifiSsid[] = "wifi_ssid";
 constexpr char kPrefWifiPass[] = "wifi_pass";
@@ -356,14 +370,16 @@ time_t make_time(int year, int mon, int day, int hour, int min, int sec) {
   return mktime(&t);  // TZ unset in newlib: fields taken as they are, no zone applied
 }
 
-// Sets both the system clock and the RTC.
-void set_clock(time_t now) {
+// Sets both the system clock and the RTC. False if the RTC write failed.
+bool set_clock(time_t now) {
   set_system_clock(now);
   g_rtc.time_set = true;
   g_rtc.alarm_checked = 0;  // a jump in time rings nothing it skipped over
   g_rtc.trim_base = 0;      // set by hand: not exact enough to measure drift from
   // Fails if the RTC is missing, or within ~2 s of power-up while its crystal starts.
-  if (!rtc::write(now)) Serial.print("RTC write failed: try `set` again\r\n");
+  if (rtc::write(now)) return true;
+  Serial.print("RTC write failed: try `set` again\r\n");
+  return false;
 }
 
 // __DATE__ is "Nov 18 2026", __TIME__ is "12:34:56". Gives the system clock a
@@ -809,6 +825,7 @@ char handle_alarms() {
 // ---- Wi-Fi setup (#20) ----
 
 void ntp_sync_soon();
+void print_time();
 
 void show_setup(portal::Screen screen, const char* ap, const char* ssid) {
   switch (screen) {
@@ -932,15 +949,6 @@ const portal::Hooks kSetupHooks = {show_setup,        setup_load,      setup_app
                                    setup_offer_time,  save_networks,   setup_cancel,
                                    setup_alarms_json, setup_alarm_edit};
 
-// True if KEY stays down until `until_ms` after boot.
-bool key_held_until(uint32_t until_ms) {
-  while (digitalRead(kKeyPin) == LOW) {
-    if (millis() >= until_ms) return true;
-    delay(10);
-  }
-  return false;
-}
-
 // Runs setup mode, then syncs if a network was set and redraws the face.
 // Returns the NTP log letter (0 if no sync ran).
 char run_setup(bool verbose) {
@@ -963,6 +971,184 @@ char run_setup(bool verbose) {
   return letter;
 }
 
+// ---- Button menu (#41, ADR-0018) ----
+
+bool key_down() { return digitalRead(kKeyPin) == LOW; }
+bool boot_down() { return digitalRead(kBootPin) == LOW; }
+
+menu::Context menu_context() {
+  // While the time is not set this is the build time: a start near the real date.
+  const tz::Civil c = tz::to_civil(g_zone, time(nullptr));
+  menu::Context ctx;
+  ctx.now = menu::clamped({c.year, c.month, c.day, c.hour, c.minute});
+  ctx.tz_preset = menu::find_tz_preset(g_rtc.tz);
+  ctx.wifi_saved = g_rtc.wifi_configured;
+  return ctx;
+}
+
+ButtonLabels menu_buttons(const menu::Menu& m) {
+  return {m.key_label(), m.key_hold_label(), m.boot_label()};
+}
+
+void draw_menu(const menu::Menu& m) {
+  if (m.screen() == menu::Screen::DateTime) {
+    const menu::DateTime& v = m.value();
+    render_datetime(g_fb, m.title(),
+                    {v.year, v.month, v.day, v.hour, v.minute, static_cast<int>(m.field())},
+                    menu_buttons(m));
+  } else {
+    const char* items[menu::kTzPresetCount + 1];  // the longest list
+    const size_t n = m.count();
+    for (size_t i = 0; i < n; ++i) items[i] = m.item(i);
+    render_list(g_fb, m.title(), items, n, m.selected(), menu_buttons(m));
+  }
+  g_lcd.refresh_full(g_fb);
+}
+
+// A short message, shown for a moment before the next screen.
+void show_note(const char* line1, const char* line2) {
+  render_message(g_fb, line1, line2);
+  g_lcd.refresh_full(g_fb);
+  delay(1500);
+}
+
+// Local wall clock -> UTC, as `set`: in the hour skipped in spring the time
+// moves an hour on, in the repeated autumn hour the first one wins. Seconds 0.
+bool menu_set_time(const menu::DateTime& v) {
+  return set_clock(static_cast<time_t>(
+      tz::to_utc(g_zone, make_time(v.year, v.month, v.day, v.hour, v.minute, 0))));
+}
+
+// Carries out what the menu asked for. True if Wi-Fi setup was chosen.
+bool menu_action(const menu::Menu& m, menu::Action a, bool verbose) {
+  switch (a) {
+    case menu::Action::SaveDateTime:
+      if (!menu_set_time(m.value())) show_note("Time not saved", "RTC did not answer");
+      if (verbose) print_time();
+      return false;
+    case menu::Action::SaveTimezone:
+      if (!use_tz(menu::kTzPresets[m.tz_choice()].posix)) return false;
+      if (!save_tz(g_rtc.tz)) show_note("Timezone set", "but lost at power-off");
+      if (verbose) Serial.printf("tz %s\r\n", g_rtc.tz);
+      return false;
+    case menu::Action::WifiForget: {
+      provision::WifiList none{};
+      const bool ok = save_networks(none);
+      show_note(ok ? "Wi-Fi networks" : "Could not forget", ok ? "forgotten" : "the networks");
+      if (verbose) Serial.print("all Wi-Fi networks forgotten; NTP is off\r\n");
+      return false;
+    }
+    case menu::Action::WifiSetup:
+      return true;
+    case menu::Action::None:
+      return false;
+  }
+  return false;
+}
+
+// Runs the menu until it closes, 60 s pass without a press, or an alarm comes
+// due, then redraws the face (or opens Wi-Fi setup, if chosen). Called with
+// KEY up. Returns the NTP log letter of a sync after Wi-Fi setup, or 0.
+char run_menu(menu::Menu& m, bool verbose) {
+  menu::Button key({m.back_hold_ms(), 0, 0});
+  menu::Button boot({0, menu::kRepeatDelayMs, menu::kRepeatMs});
+  if (boot_down()) {
+    boot.pressed_since(millis());
+    boot.ignore_until_release();
+  }
+  draw_menu(m);
+  uint32_t last_press = millis();
+  uint32_t alarm_check = millis();
+  bool setup = false;
+  while (!m.closed()) {
+    const uint32_t now = millis();
+    const menu::Gesture k = key.update(key_down(), now);
+    const menu::Gesture b = boot.update(boot_down(), now);
+    if (k != menu::Gesture::None || b != menu::Gesture::None) last_press = now;
+    menu::Input in = menu::Input::Next;
+    bool have = true;
+    if (k == menu::Gesture::Tap) {
+      in = menu::Input::Select;
+    } else if (k == menu::Gesture::Hold) {
+      in = menu::Input::Back;
+    } else if (b == menu::Gesture::Press || b == menu::Gesture::Repeat) {
+      in = menu::Input::Next;
+    } else {
+      have = false;
+    }
+    if (have) {
+      setup = menu_action(m, m.handle(in), verbose) || setup;
+      if (!m.closed()) draw_menu(m);
+    }
+    if (now - last_press >= menu::kIdleMs) break;  // closes without saving
+    if (now - alarm_check >= 1000) {
+      alarm_check = now;
+      check_alarms();
+      if (g_rtc.ring.state == RingState::Ringing) break;
+    }
+    delay(10);
+  }
+  while (key_down()) delay(10);  // the hold that closed it is no new face gesture
+  if (setup) return run_setup(verbose);
+  update_display(true);
+  if (g_rtc.ring.state == RingState::Ringing) ring_loop();
+  return 0;
+}
+
+// Sets the time with the buttons while it is not set: with no network saved
+// (first start, #34) the timezone list comes first and KEY held 5 s opens
+// Wi-Fi setup; otherwise only the date & time editor. `welcome` shows a
+// greeting first (power-on). Returns the NTP log letter after Wi-Fi setup, or 0.
+char run_set_time(bool welcome, bool verbose) {
+  menu::Menu m;
+  if (g_rtc.wifi_configured) {
+    m.open_datetime(menu_context());
+  } else {
+    if (welcome) show_note("Welcome to inkwake", "Let's set the clock");
+    m.open_first_time(menu_context());
+  }
+  return run_menu(m, verbose);
+}
+
+// KEY went down at `since_ms` with the face shown; waits for what it means:
+//   tap:  the date & time editor while the time is not set, else nothing
+//   2 s:  stops a snoozed alarm (ADR-0017); otherwise shows "Menu" and opens
+//         the menu on release
+//   5 s:  Wi-Fi setup
+// Returns the NTP log letter of a sync after Wi-Fi setup, or 0.
+char handle_face_key(uint32_t since_ms, bool verbose) {
+  menu::Button key({menu::kMenuHoldMs, 0, 0});
+  key.pressed_since(since_ms);
+  bool stopped = false;
+  for (;;) {
+    const uint32_t now = millis();
+    const menu::Gesture g = key.update(key_down(), now);
+    if (g == menu::Gesture::Tap) {
+      if (g_rtc.time_set) return 0;
+      return run_set_time(false, verbose);
+    }
+    if (g == menu::Gesture::Hold) {
+      if (g_rtc.ring.state == RingState::Snoozed) {
+        ring_dismiss(g_rtc.ring);
+        update_display(false);
+        stopped = true;
+        if (verbose) Serial.print("alarm stopped\r\n");
+      } else {
+        render_message(g_fb, "Menu", "Keep holding for Wi-Fi setup");
+        g_lcd.refresh_full(g_fb);
+      }
+    }
+    if (g == menu::Gesture::Release) {
+      if (stopped) return 0;
+      menu::Menu m;
+      m.open(menu_context());
+      return run_menu(m, verbose);
+    }
+    if (key_down() && key.held_ms(now) >= menu::kSetupHoldMs) return run_setup(verbose);
+    delay(10);
+  }
+}
+
 void print_help() {
   Serial.print(
       "\r\ninkwake clock (M3)\r\n"
@@ -971,6 +1157,7 @@ void print_help() {
       "  rtc                    RTC time and wake counters\r\n"
       "  alarm                  list alarms; `alarm help` for add, edit, test\r\n"
       "  setup                  Wi-Fi setup page (same as holding KEY 5 s)\r\n"
+      "  (KEY held 2 s opens the button menu: date & time, timezone, Wi-Fi)\r\n"
       "  wifi                   saved Wi-Fi networks (up to 5), in the order they are tried\r\n"
       "  wifi ssid NAME         start adding a network (spaces allowed), then:\r\n"
       "  wifi pass PASSWORD     its password (empty for an open network); saves it first, syncs\r\n"
@@ -1614,6 +1801,7 @@ void setup() {
   pinMode(kAmpPin, OUTPUT);
   digitalWrite(kAmpPin, LOW);
   pinMode(kKeyPin, INPUT);
+  pinMode(kBootPin, INPUT);
 
   g_lcd.set_write_mode(static_cast<St7305::WriteMode>(g_rtc.panel_mode));
   rtc::begin();
@@ -1657,20 +1845,18 @@ void setup() {
              : ext1 & (1ULL << rtc::kIntPin)   ? 'R'
                                                : '?',
              rtc_status, regions, 0, alarm_letter);
-    if (g_rtc.ring.state == RingState::Ringing) ring_loop();
+    // A KEY press that woke the board as an alarm came due went to the alarm.
+    const bool rang = g_rtc.ring.state == RingState::Ringing;
+    if (rang) ring_loop();
+    // KEY: tap, menu or Wi-Fi setup, timed from the press that woke the board
+    // (millis() 0), before any NTP sync so the buttons answer at once.
+    char ntp_letter = key && !rang ? handle_face_key(0, false) : 0;
     // After the redraw (and any alarm), so neither waits for Wi-Fi.
-    const char ntp_letter = maybe_ntp_sync();
-    if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
+    if (ntp_letter == 0) {
+      ntp_letter = maybe_ntp_sync();
+      if (ntp_letter != 0 && current_face() != g_rtc.shown) update_display(false);
+    }
     g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = ntp_letter;
-    // KEY held 2 s while snoozed: stop the alarm. Holding on to 5 s opens setup.
-    if (key && g_rtc.ring.state == RingState::Snoozed && key_held_until(kDismissHoldMs)) {
-      ring_dismiss(g_rtc.ring);
-      update_display(false);
-    }
-    if (key && key_held_until(kKeyHoldMs)) {
-      const char letter = run_setup(false);
-      if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
-    }
     // Minute tick: back to sleep at once. Looking for a USB host costs time
     // on every wake; to use serial after plugging in, press KEY.
     if (!key) deep_sleep();
@@ -1704,11 +1890,14 @@ void setup() {
     // A reset keeps the system clock; a power-on starts it at 1970.
     if (rtc_status != rtc::Status::Ok && time(nullptr) < kMinValidTime) set_clock_from_build();
     g_lcd.begin(true);
-    update_display(true);
+    // First start (#34): no time and no network saved. The time is set with
+    // the buttons; KEY held 5 s there opens Wi-Fi setup. With a network
+    // saved the boot NTP sync below sets the time instead.
+    const bool first_time = !g_rtc.wifi_configured && !g_rtc.time_set;
+    if (!first_time) update_display(true);
     log_wake('P', rtc_status, kFullRefresh, 0);
-    // First boot (or after `wifi forget`): open setup right away.
-    if (!g_rtc.wifi_configured) {
-      const char letter = run_setup(false);
+    if (first_time) {
+      const char letter = run_set_time(true, false);
       if (letter != 0) g_rtc.log[(g_rtc.log_count - 1) % kLogLen].ntp_result = letter;
     }
   }
@@ -1763,22 +1952,11 @@ void loop() {
     }
   }
   if (handle_alarms() != 0) print_alarms();
-  // KEY held 2 s while snoozed stops the alarm; held 5 s opens Wi-Fi setup.
-  static uint32_t key_down_ms = 0;
-  if (digitalRead(kKeyPin) == LOW) {
-    if (key_down_ms == 0) key_down_ms = millis() | 1;
-    if (g_rtc.ring.state == RingState::Snoozed && millis() - key_down_ms >= kDismissHoldMs) {
-      ring_dismiss(g_rtc.ring);
-      Serial.print("alarm stopped\r\n");
-      update_display(false);
-    }
-    if (millis() - key_down_ms >= kKeyHoldMs) {
-      run_setup(true);
-      key_down_ms = 0;
-      print_ntp();
-    }
-  } else {
-    key_down_ms = 0;
+  // KEY: menu (2 s), Wi-Fi setup (5 s), stop a snooze (2 s), or the date &
+  // time editor while the time is not set (tap). Two reads apart: no glitch.
+  if (key_down()) {
+    delay(menu::kDebounceMs);
+    if (key_down() && handle_face_key(millis() - menu::kDebounceMs, true) != 0) print_ntp();
   }
   static uint32_t last_temp_ms = millis();
   if (millis() - last_temp_ms >= kTempPeriodMs) {
