@@ -93,6 +93,10 @@ Good places to start: issues labelled
 
 If you like the project, a star helps other people find it.
 
+If you want to support the work, you can buy me a coffee:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/D5E72BAA2O)
+
 ## Hardware
 
 | Part | Notes |
