@@ -5,7 +5,7 @@ needs no backlight, deep sleep between minutes, so it runs for weeks on one 1865
 only to charge. Alarms work with Wi-Fi down.
 
 <p align="center">
-  <img src="docs/img/face.png" width="400" alt="Clock face: weekday and date, large time, room temperature and next alarm">
+  <img src="docs/img/clock.jpg" width="600" alt="The clock on a table: Wednesday 25 November, 16:47, 22.2 °C and a bell with the next alarm at 07:00 on the reflective screen">
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@ only to charge. Alarms work with Wi-Fi down.
   <img src="docs/img/setup.png" width="260" alt="Wi-Fi setup screen with a QR code to join the clock's setup network">
 </p>
 
-<sub>Screens rendered on a PC from the firmware's own drawing code (`firmware/tools/preview_face.cpp`).</sub>
+<sub>Top: the real clock in room light, no backlight. Below: screens rendered on a PC from the firmware's own drawing code (`firmware/tools/preview_face.cpp`).</sub>
 
 ## What it does
 
