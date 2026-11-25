@@ -106,6 +106,50 @@ void test_civil_days() {
   TEST_ASSERT_EQUAL_UINT(31, d);
 }
 
+void test_offset_codec() {
+  TEST_ASSERT_EQUAL_HEX8(0x00, encode_offset(0));
+  TEST_ASSERT_EQUAL_HEX8(0x0A, encode_offset(10));
+  TEST_ASSERT_EQUAL_HEX8(0x7F, encode_offset(-1));
+  TEST_ASSERT_EQUAL_HEX8(0x40, encode_offset(-64));
+  TEST_ASSERT_EQUAL_HEX8(0x3F, encode_offset(63));
+  TEST_ASSERT_EQUAL_HEX8(0x3F, encode_offset(100));   // clamped
+  TEST_ASSERT_EQUAL_HEX8(0x40, encode_offset(-100));  // clamped
+  for (int v = kOffsetMin; v <= kOffsetMax; v++)
+    TEST_ASSERT_EQUAL_INT(v, decode_offset(encode_offset(v)));
+  // Mode 1 (4.069 ppm per step) read back in mode-0 steps: 10 * 4.069 / 4.34 = 9.4
+  TEST_ASSERT_EQUAL_INT(9, decode_offset(0x80 | 10));
+  TEST_ASSERT_EQUAL_INT(-9, decode_offset(0x80 | 0x76));
+}
+
+void test_trim_fast_clock() {
+  // Measured on the board: ~3.7 s/day fast = 42.8 ppm -> +10 steps.
+  int next = 99;
+  TEST_ASSERT_TRUE(trim_offset(0, 3700000, 86400, next));
+  TEST_ASSERT_EQUAL_INT(10, next);
+  // Slow clock lowers the value, from a non-zero start.
+  TEST_ASSERT_TRUE(trim_offset(10, -1000000, 86400, next));  // -11.6 ppm = -2.7 steps
+  TEST_ASSERT_EQUAL_INT(7, next);
+}
+
+void test_trim_deadband_and_limits() {
+  int next = 99;
+  // 0.5 step (~187 ms/day): left alone.
+  TEST_ASSERT_FALSE(trim_offset(5, 187000, 86400, next));
+  TEST_ASSERT_EQUAL_INT(5, next);
+  // 0.8 step: one step, not zero.
+  TEST_ASSERT_TRUE(trim_offset(5, 300000, 86400, next));
+  TEST_ASSERT_EQUAL_INT(6, next);
+  // Too short a span.
+  TEST_ASSERT_FALSE(trim_offset(0, 3700000, kTrimMinSpanS - 1, next));
+  TEST_ASSERT_EQUAL_INT(0, next);
+  // Implausible: 30 s in a day (347 ppm) is a jump, not drift.
+  TEST_ASSERT_FALSE(trim_offset(0, 30000000, 86400, next));
+  // Clamped at the end of the range.
+  TEST_ASSERT_TRUE(trim_offset(60, 8000000, 86400, next));
+  TEST_ASSERT_EQUAL_INT(kOffsetMax, next);
+  TEST_ASSERT_FALSE(trim_offset(kOffsetMax, 8000000, 86400, next));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_known_times);
@@ -116,5 +160,8 @@ int main() {
   RUN_TEST(test_unused_bits_ignored);
   RUN_TEST(test_round_trip_every_day);
   RUN_TEST(test_civil_days);
+  RUN_TEST(test_offset_codec);
+  RUN_TEST(test_trim_fast_clock);
+  RUN_TEST(test_trim_deadband_and_limits);
   return UNITY_END();
 }
