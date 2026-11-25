@@ -488,7 +488,7 @@ static void test_list_marks_selection() {
 
 static void test_datetime_marks_field() {
   for (int f = 0; f < 5; ++f) {
-    render_datetime(g_fb, "Date & time", {2026, 11, 25, 14, 7, f}, {"Next", "hold: back", "+1"});
+    render_datetime(g_fb, "Date & time", {2026, 11, 25, 14, 7, f, 0}, {"Next", "hold: back", "+1"});
     for (int g = 0; g < 5; ++g) {
       const Rect r = datetime_field_rect(g);
       TEST_ASSERT_FALSE(r.empty());
@@ -501,12 +501,40 @@ static void test_datetime_marks_field() {
   TEST_ASSERT_TRUE(datetime_field_rect(5).empty());
 }
 
+// Save and Cancel (#55): inside the screen, below every field, filled only when marked.
+static void test_editor_buttons() {
+  const Rect save = editor_button_rect(kEditorSave);
+  const Rect cancel = editor_button_rect(kEditorCancel);
+  TEST_ASSERT_TRUE(editor_button_rect(0).empty());
+  for (const Rect& r : {save, cancel}) {
+    TEST_ASSERT_TRUE(r.x >= 0 && r.x + r.w <= Framebuffer::kWidth &&
+                     r.y + r.h <= Framebuffer::kHeight);
+    TEST_ASSERT_TRUE(r.y > datetime_field_rect(4).y + datetime_field_rect(4).h);
+    const AlarmEditView v{6, 45, "Custom", 0x7F, 0, 0};
+    const Rect day = alarm_field_rect(v, 9);
+    TEST_ASSERT_TRUE(r.y > day.y + day.h);
+  }
+  TEST_ASSERT_TRUE(save.x + save.w < cancel.x);
+  for (int b = 0; b <= 2; ++b) {
+    render_datetime(g_fb, "Date & time", {2026, 11, 25, 14, 7, b == 0 ? 0 : -1, b},
+                    {"Next", "hold: back", "Save"});
+    // Inside each button, left of its text: black only when that one is marked.
+    TEST_ASSERT_EQUAL(b == kEditorSave, g_fb.get(save.x + 5, save.y + save.h / 2));
+    TEST_ASSERT_EQUAL(b == kEditorCancel, g_fb.get(cancel.x + 5, cancel.y + cancel.h / 2));
+    // No field is marked while a button is.
+    for (int g = 0; g < 5; ++g) {
+      const Rect r = datetime_field_rect(g);
+      TEST_ASSERT_EQUAL(b == 0 && g == 0, g_fb.get(r.x, r.y));
+    }
+  }
+}
+
 // ---- alarm editor (#55) -----------------------------------------------------------
 
 static void test_alarm_edit_marks_field() {
   const uint8_t mask = 0x15;  // Mo We Fr
   for (int f = 0; f < 10; ++f) {
-    const AlarmEditView v{6, 45, "Custom", mask, f};
+    const AlarmEditView v{6, 45, "Custom", mask, f, 0};
     render_alarm_edit(g_fb, "Edit alarm", v, {"Next", "hold: back", "+1"});
     for (int g = 0; g < 10; ++g) {
       const Rect r = alarm_field_rect(v, g);
@@ -525,7 +553,7 @@ static void test_alarm_edit_marks_field() {
     }
   }
   // Fields never overlap each other.
-  const AlarmEditView v{6, 45, "Weekend", 0, 0};
+  const AlarmEditView v{6, 45, "Weekend", 0, 0, 0};
   for (int a = 0; a < 10; ++a) {
     for (int b = a + 1; b < 10; ++b) {
       const Rect ra = alarm_field_rect(v, a), rb = alarm_field_rect(v, b);
@@ -563,6 +591,7 @@ int main(int, char**) {
   RUN_TEST(test_list_scrolls_around_selection);
   RUN_TEST(test_list_marks_selection);
   RUN_TEST(test_datetime_marks_field);
+  RUN_TEST(test_editor_buttons);
   RUN_TEST(test_alarm_edit_marks_field);
   return UNITY_END();
 }

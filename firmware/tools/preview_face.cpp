@@ -5,10 +5,10 @@
 // --critical the battery mark, --alarm HH:MM [--snoozed|--skipped] [--wd N] the next
 // alarm, --setup draws the Wi-Fi setup screen and --ringing the alarm screen
 // instead. --menu SCREEN draws a button menu screen (#41): main, tz, custom
-// (timezone list with a custom zone), wifi, forget, first (first start), date0 .. date4 (the
-// date & time editor with field 0-4 marked), alarms (#55: list), alarm (one alarm),
-// delete (its confirmation), add (new alarm) or alarm0 .. alarm9 (the editor on a
-// custom-days alarm with field 0-9 marked).
+// (timezone list with a custom zone), wifi, forget, first (first start), date0 .. date6 (the
+// date & time editor with field 0-4, Save (5) or Cancel (6) marked), alarms (#55: list),
+// alarm (one alarm), delete (its confirmation), add (new alarm) or alarm0 .. alarm11 (the
+// editor on a custom-days alarm with field 0-9, Save (10) or Cancel (11) marked).
 //
 //   gcc -c lib/qrcodegen/src/qrcodegen.c -o qrcodegen.o
 //   g++ -std=c++17 -Ilib/display/src -Ilib/qrcodegen/src -Ilib/menu/src -Ilib/tz/src
@@ -54,58 +54,64 @@ static void draw_menu(Framebuffer& fb, const char* name) {
   using menu::Input;
   const bool alarms = std::strncmp(name, "alarm", 5) == 0 || std::strcmp(name, "delete") == 0 ||
                       std::strcmp(name, "add") == 0;
+  // KEY = Move (next item, next field), BOOT = Act (open, choose, +1).
   if (alarms) {
-    m.handle(Input::Next);
-    m.handle(Input::Select);  // the alarm list
+    m.handle(Input::Move);
+    m.handle(Input::Act);  // the alarm list
   }
   if (std::strcmp(name, "add") == 0) {
-    m.handle(Input::Next);
-    m.handle(Input::Next);
-    m.handle(Input::Select);
+    m.handle(Input::Move);
+    m.handle(Input::Move);
+    m.handle(Input::Act);
   } else if (std::strcmp(name, "alarm") == 0 || std::strcmp(name, "delete") == 0) {
-    m.handle(Input::Select);
+    m.handle(Input::Act);
     if (std::strcmp(name, "delete") == 0) {
-      m.handle(Input::Next);
-      m.handle(Input::Next);
-      m.handle(Input::Select);
+      m.handle(Input::Move);
+      m.handle(Input::Move);
+      m.handle(Input::Act);
     }
   } else if (alarms && name[5] >= '0' && name[5] <= '9') {
-    m.handle(Input::Select);
-    m.handle(Input::Select);  // Edit
-    for (int f = name[5] - '0'; f > 0; --f) m.handle(Input::Select);
+    m.handle(Input::Act);
+    m.handle(Input::Act);  // Edit
+    for (int f = std::atoi(name + 5); f > 0; --f) m.handle(Input::Move);
   } else if (std::strcmp(name, "first") == 0) {
     m.open_first_time(c);
   } else if (std::strncmp(name, "date", 4) == 0) {
-    m.handle(Input::Select);
-    for (int f = std::atoi(name + 4); f > 0; --f) m.handle(Input::Select);
+    m.handle(Input::Act);
+    for (int f = std::atoi(name + 4); f > 0; --f) m.handle(Input::Move);
   } else if (std::strcmp(name, "tz") == 0 || std::strcmp(name, "custom") == 0) {
-    m.handle(Input::Next);
-    m.handle(Input::Next);
-    m.handle(Input::Select);
-    for (int k = 0; k < 6; ++k) m.handle(Input::Next);  // scrolled to show both arrows
+    m.handle(Input::Move);
+    m.handle(Input::Move);
+    m.handle(Input::Act);
+    for (int k = 0; k < 6; ++k) m.handle(Input::Move);  // scrolled to show both arrows
   } else if (std::strcmp(name, "wifi") == 0 || std::strcmp(name, "forget") == 0) {
-    m.handle(Input::Next);
-    m.handle(Input::Next);
-    m.handle(Input::Next);
-    m.handle(Input::Select);
+    m.handle(Input::Move);
+    m.handle(Input::Move);
+    m.handle(Input::Move);
+    m.handle(Input::Act);
     if (std::strcmp(name, "forget") == 0) {
-      m.handle(Input::Next);
-      m.handle(Input::Select);
+      m.handle(Input::Move);
+      m.handle(Input::Act);
     }
   }
   if (m.screen() == menu::Screen::DateTime) {
     const menu::DateTime& v = m.value();
-    render_datetime(fb, m.title(),
-                    {v.year, v.month, v.day, v.hour, v.minute, static_cast<int>(m.field())},
-                    {m.key_label(), m.key_hold_label(), m.boot_label()});
+    const bool on_button = m.editor_button() != menu::EditorButton::None;
+    render_datetime(
+        fb, m.title(),
+        {v.year, v.month, v.day, v.hour, v.minute, on_button ? -1 : static_cast<int>(m.field()),
+         static_cast<int>(m.editor_button())},
+        {m.key_label(), m.key_hold_label(), m.boot_label()});
     return;
   }
   if (m.screen() == menu::Screen::AlarmEdit) {
     const menu::AlarmEdit& e = m.alarm_edit();
-    render_alarm_edit(fb, m.title(),
-                      {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
-                       static_cast<int>(e.field())},
-                      {m.key_label(), m.key_hold_label(), m.boot_label()});
+    const bool on_button = m.editor_button() != menu::EditorButton::None;
+    render_alarm_edit(
+        fb, m.title(),
+        {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
+         on_button ? -1 : static_cast<int>(e.field()), static_cast<int>(m.editor_button())},
+        {m.key_label(), m.key_hold_label(), m.boot_label()});
     return;
   }
   const char* items[menu::kMaxListItems];

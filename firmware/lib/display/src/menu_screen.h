@@ -37,8 +37,13 @@ void render_list(Framebuffer& fb, const char* title, const char* const* items, s
 // First item shown, so that `selected` is visible (kept in the middle while it can be).
 size_t list_first_row(size_t count, size_t selected);
 
+// Save and Cancel along the bottom of both editors (#55): KEY marks them after
+// the last field. 0 = neither marked.
+constexpr int kEditorSave = 1;
+constexpr int kEditorCancel = 2;
+
 // Values of the date & time editor; `field` 0-4 = year, month, day, hour,
-// minute is marked (white on black).
+// minute is marked (white on black), -1 = none (`button` is marked).
 struct DateTimeView {
   int year;
   int month;
@@ -46,10 +51,11 @@ struct DateTimeView {
   int hour;
   int minute;
   int field;
+  int button;  // 0, kEditorSave or kEditorCancel
 };
 
 // Clears the framebuffer and draws `title`, "2026-11-25" over "14:07" in large
-// digits, the weekday under the date, and the button labels.
+// digits, the weekday under the date, Save and Cancel, and the button labels.
 void render_datetime(Framebuffer& fb, const char* title, const DateTimeView& v,
                      const ButtonLabels& buttons);
 
@@ -63,17 +69,21 @@ struct AlarmEditView {
   int minute;
   const char* days;  // preset name: "Mon-Fri", "Custom", ...
   uint8_t mask;      // days the alarm rings, bit 0 = Monday
-  int field;
+  int field;         // -1 = none (`button` is marked)
+  int button;        // 0, kEditorSave or kEditorCancel
 };
 
 // Clears the framebuffer and draws `title`, "07:00" in large digits, the days
-// preset under it, a row of the seven days (filled = rings that day), and the
-// button labels. The field being changed is marked: hour, minute and preset
+// preset under it, a row of the seven days (filled = rings that day), Save and
+// Cancel, and the button labels. The field being changed is marked: hour, minute and preset
 // white on black, a day with a bar under it.
 void render_alarm_edit(Framebuffer& fb, const char* title, const AlarmEditView& v,
                        const ButtonLabels& buttons);
 
 // Screen area of a field in render_alarm_edit, including its mark. For tests.
 Rect alarm_field_rect(const AlarmEditView& v, int field);
+
+// Screen area of the Save or Cancel button in both editors. For tests.
+Rect editor_button_rect(int button);
 
 }  // namespace inkwake

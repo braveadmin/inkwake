@@ -47,8 +47,10 @@ class AlarmEdit {
 
   // BOOT: +1 on the field (wraps), next preset, or a weekday on/off.
   void increment();
-  // KEY tap: on to the next field. False on the last field (KEY then saves).
+  // KEY tap: on to the next field. False on the last field (KEY then marks Save).
   bool next_field();
+  // Back to the hour (KEY past Cancel).
+  void first_field() { field_ = AlarmField::Hour; }
 
  private:
   uint8_t hour_ = kNewAlarmHour;

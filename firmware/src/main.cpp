@@ -1051,18 +1051,26 @@ ButtonLabels menu_buttons(const menu::Menu& m) {
   return {m.key_label(), m.key_hold_label(), m.boot_label()};
 }
 
+// The marked editor field, or -1 while Save or Cancel is marked.
+int editor_field(const menu::Menu& m, int field) {
+  return m.editor_button() == menu::EditorButton::None ? field : -1;
+}
+
 void draw_menu(const menu::Menu& m) {
   if (m.screen() == menu::Screen::DateTime) {
     const menu::DateTime& v = m.value();
-    render_datetime(g_fb, m.title(),
-                    {v.year, v.month, v.day, v.hour, v.minute, static_cast<int>(m.field())},
-                    menu_buttons(m));
+    render_datetime(
+        g_fb, m.title(),
+        {v.year, v.month, v.day, v.hour, v.minute, editor_field(m, static_cast<int>(m.field())),
+         static_cast<int>(m.editor_button())},
+        menu_buttons(m));
   } else if (m.screen() == menu::Screen::AlarmEdit) {
     const menu::AlarmEdit& e = m.alarm_edit();
-    render_alarm_edit(g_fb, m.title(),
-                      {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
-                       static_cast<int>(e.field())},
-                      menu_buttons(m));
+    render_alarm_edit(
+        g_fb, m.title(),
+        {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
+         editor_field(m, static_cast<int>(e.field())), static_cast<int>(m.editor_button())},
+        menu_buttons(m));
   } else {
     const char* items[menu::kMaxListItems];
     const size_t n = m.count();
@@ -1137,14 +1145,16 @@ char run_menu(menu::Menu& m, bool verbose) {
     const menu::Gesture k = key.update(key_down(), now);
     const menu::Gesture b = boot.update(boot_down(), now);
     if (k != menu::Gesture::None || b != menu::Gesture::None) last_press = now;
-    menu::Input in = menu::Input::Next;
+    // KEY moves the mark, BOOT acts on it (#55); BOOT held repeats only on
+    // values (+1), never on Open, Save or a day on/off.
+    menu::Input in = menu::Input::Move;
     bool have = true;
     if (k == menu::Gesture::Tap) {
-      in = menu::Input::Select;
+      in = menu::Input::Move;
     } else if (k == menu::Gesture::Hold) {
       in = menu::Input::Back;
-    } else if (b == menu::Gesture::Press || b == menu::Gesture::Repeat) {
-      in = menu::Input::Next;
+    } else if (b == menu::Gesture::Press || (b == menu::Gesture::Repeat && m.repeats())) {
+      in = menu::Input::Act;
     } else {
       have = false;
     }

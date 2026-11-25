@@ -25,24 +25,30 @@ constexpr int kRowTextDy = 30;  // baseline below the row top
 constexpr int kRowMargin = 8;   // bar inset from the screen edges
 constexpr int kRowTextX = 24;
 
-constexpr int kDateBaseline = 152;
-constexpr int kWeekdayBaseline = 182;
-constexpr int kTimeBaseline = 268;
+constexpr int kDateBaseline = 145;
+constexpr int kWeekdayBaseline = 172;
+constexpr int kTimeBaseline = 232;
 constexpr int kDigitGap = 2;  // between digits of one field
 constexpr int kSepPad = 6;    // either side of "-" and ":"
 constexpr int kMarkPad = 5;   // black mark around a field's digits
 
 // Alarm editor (#55): time, days preset, then the row of seven days.
-constexpr int kAlarmTimeBaseline = 160;
-constexpr int kPresetBaseline = 212;
+constexpr int kAlarmTimeBaseline = 145;
+constexpr int kPresetBaseline = 188;
 constexpr int kPresetPad = 6;  // black mark around the preset name
-constexpr int kDayTop = 236;
+constexpr int kDayTop = 206;
 constexpr int kDayW = 48;
-constexpr int kDayH = 32;
+constexpr int kDayH = 30;
 constexpr int kDayGap = 6;
-constexpr int kDayTextDy = 23;  // text baseline below the cell top
-constexpr int kDayBarGap = 4;   // bar under the day being changed
-constexpr int kDayBarH = 5;
+constexpr int kDayTextDy = 22;  // text baseline below the cell top
+constexpr int kDayBarGap = 3;   // bar under the day being changed
+constexpr int kDayBarH = 4;
+// Save and Cancel, both editors: outlined, filled when marked.
+constexpr int kButtonsBaseline = 284;
+constexpr int kButtonW = 120;
+constexpr int kButtonH = 34;
+constexpr int kButtonCx[] = {130, 270};  // Save, Cancel
+const char* const kButtonText[] = {"Save", "Cancel"};
 constexpr int kDayBorder = 2;  // outline of a day that is off
 const char* const kDay2[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
 
@@ -151,7 +157,30 @@ void draw_buttons_and_title(Framebuffer& fb, const char* title, const ButtonLabe
   draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTitleBaseline, title);
 }
 
+void draw_editor_buttons(Framebuffer& fb, int marked) {
+  for (int b = 1; b <= 2; ++b) {
+    const Rect r = editor_button_rect(b);
+    const bool mark = b == marked;
+    if (mark) {
+      fb.fill(r, true);
+    } else {
+      fb.fill(Rect{r.x, r.y, r.w, 2}, true);
+      fb.fill(Rect{r.x, r.y + r.h - 2, r.w, 2}, true);
+      fb.fill(Rect{r.x, r.y, 2, r.h}, true);
+      fb.fill(Rect{r.x + r.w - 2, r.y, 2, r.h}, true);
+    }
+    draw_text_centered(fb, fonts::kText30, kButtonCx[b - 1], kButtonsBaseline - 3,
+                       kButtonText[b - 1], !mark);
+  }
+}
+
 }  // namespace
+
+Rect editor_button_rect(int button) {
+  if (button != kEditorSave && button != kEditorCancel) return Rect{};
+  const int top = kButtonsBaseline - fonts::kText30.ascent - 10;
+  return Rect{kButtonCx[button - 1] - kButtonW / 2, top, kButtonW, kButtonH};
+}
 
 size_t list_first_row(size_t count, size_t selected) {
   if (count <= kListRows || selected < kListRows / 2) return 0;
@@ -201,6 +230,7 @@ void render_datetime(Framebuffer& fb, const char* title, const DateTimeView& v,
     draw_text_centered(fb, fonts::kText20, Framebuffer::kWidth / 2, kWeekdayBaseline,
                        kWeekdays[weekday(v.year, v.month, v.day)]);
   }
+  draw_editor_buttons(fb, v.button);
 }
 
 namespace {
@@ -260,6 +290,7 @@ void render_alarm_edit(Framebuffer& fb, const char* title, const AlarmEditView& 
       fb.fill(Rect{x, kDayTop + kDayH + kDayBarGap, kDayW, kDayBarH}, true);
     }
   }
+  draw_editor_buttons(fb, v.button);
 }
 
 }  // namespace inkwake

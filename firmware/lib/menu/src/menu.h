@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Button menu navigation (#41, ADR-0018): which screen shows what, and what a
-// button press does there. Pure state: main.cpp turns presses into Inputs,
-// draws the screen and carries out the returned Action.
+// Button menu navigation (#41, #55, ADR-0018): which screen shows what, and
+// what a button press does there. Pure state: main.cpp turns presses into
+// Inputs, draws the screen and carries out the returned Action.
 //
-//   Main list:   Date & time, Alarms, Timezone, Wi-Fi
-//   Date & time: year, month, day, hour, minute; the last field saves
-//   Alarms:      one row per alarm, then "Add alarm" (hidden at kMaxAlarms)
-//   Alarm:       Edit, Turn off / Turn on, Delete
-//   Alarm editor: hour, minute, days (+ Mon..Sun with Custom); the last field saves
+// The same two roles everywhere: KEY moves the mark (next item, next field),
+// BOOT acts on what is marked (open, choose, +1, Save). KEY held goes back.
+//
+//   Main list:   Date & time, Alarms, Timezone, Wi-Fi, Close
+//   Date & time: year, month, day, hour, minute, then Save, Cancel
+//   Alarms:      one row per alarm, "Add alarm" (hidden at kMaxAlarms), Back
+//   Alarm:       Edit, Turn off / Turn on, Delete, Back
+//   Alarm editor: hour, minute, days (+ Mon..Sun with Custom), then Save, Cancel
 //   Delete:      Cancel, Delete  (confirmation, Cancel first)
-//   Timezone:    preset list (plus "Custom" while a zone not in it is set)
-//   Wi-Fi:       Set up Wi-Fi, Forget all networks (only with one saved)
+//   Timezone:    preset list (plus "Custom" while a zone not in it is set), Back
+//   Wi-Fi:       Set up Wi-Fi, Forget all networks (only with one saved), Back
 //   Forget:      Cancel, Forget all  (confirmation, Cancel first)
 //
 // First-time setup (#34): timezone, then the date & time editor, with no way
@@ -31,10 +34,13 @@
 namespace inkwake::menu {
 
 enum class Input : uint8_t {
-  Next,    // BOOT press or repeat: next item, or +1 on the marked field
-  Select,  // KEY tap: open, next field, save
-  Back,    // KEY held: back without saving
+  Move,  // KEY tap: next item or next field (wraps around)
+  Act,   // BOOT press (or repeat, where repeats()): open, choose, +1, Save, Cancel
+  Back,  // KEY held: back without saving
 };
+
+// Past an editor's last field, KEY marks these in turn, then the first field again.
+enum class EditorButton : uint8_t { None, Save, Cancel };
 
 enum class Screen : uint8_t {
   Closed,
@@ -49,9 +55,10 @@ enum class Screen : uint8_t {
   AlarmDelete,
 };
 
-// Longest list: the timezones (plus "Custom") or the alarms (plus "Add alarm").
+// Longest list: the timezones (plus "Custom" and "Back") or the alarms (plus
+// "Add alarm" and "Back").
 constexpr size_t kMaxListItems =
-    kTzPresetCount + 1 > sched::kMaxAlarms + 1 ? kTzPresetCount + 1 : sched::kMaxAlarms + 1;
+    kTzPresetCount + 2 > sched::kMaxAlarms + 2 ? kTzPresetCount + 2 : sched::kMaxAlarms + 2;
 constexpr size_t kItemLen = 32;  // alarm rows and titles, including the NUL
 
 enum class Action : uint8_t {
@@ -78,7 +85,7 @@ class Menu {
   // back closes the menu.
   void open_datetime(const Context& c);
   // First-time setup: the timezone list, then the date & time editor. KEY
-  // held 5 s (back_hold_ms()) asks for Wi-Fi setup; the last field saves.
+  // held 5 s (back_hold_ms()) asks for Wi-Fi setup; Cancel closes the menu.
   void open_first_time(const Context& c);
 
   // How long KEY must be held for Input::Back on this menu.
@@ -91,11 +98,13 @@ class Menu {
   bool closed() const { return screen_ == Screen::Closed; }
   const char* title() const;
   // What the buttons do here, drawn next to each button on the panel's top edge.
-  const char* key_label() const;       // KEY tap, e.g. "Open"
+  const char* key_label() const;       // KEY tap: "Next"
   const char* key_hold_label() const;  // KEY held, e.g. "hold: back"
-  const char* boot_label() const;      // BOOT, e.g. "Next" or "+1"
+  const char* boot_label() const;      // BOOT: "Open", "+1", "Save", "Back", ...
+  // BOOT held repeats Act here: on hour, minute and the date fields only.
+  bool repeats() const;
 
-  // List screens (Main, Timezone, Wifi, WifiForget).
+  // List screens (all but the two editors); the last row may be Back / Close.
   size_t count() const;
   size_t selected() const { return sel_; }
   const char* item(size_t i) const;
@@ -103,6 +112,8 @@ class Menu {
   // Date & time editor.
   const DateTime& value() const { return value_; }
   Field field() const { return field_; }
+  // Both editors: Save or Cancel marked instead of a field.
+  EditorButton editor_button() const { return button_; }
 
   // After SaveTimezone: index into kTzPresets.
   size_t tz_choice() const { return tz_choice_; }
@@ -116,7 +127,12 @@ class Menu {
   void show(Screen s, size_t sel);
   bool has_custom() const { return ctx_.tz_preset < 0; }
   bool can_add() const { return ctx_.alarms.size() < sched::kMaxAlarms; }
-  Action handle_alarms(Input in);
+  bool has_back_row() const;
+  bool on_back_row() const;
+  void start_datetime();
+  Action handle_editor(Input in);
+  Action back();
+  Action act();
   Action save_edit();
 
   Context ctx_;
@@ -125,6 +141,7 @@ class Menu {
   size_t main_sel_ = 0;  // kept while a sub-screen is open
   DateTime value_;
   Field field_ = Field::Year;
+  EditorButton button_ = EditorButton::None;
   bool datetime_alone_ = false;
   bool first_time_ = false;
   size_t tz_choice_ = 0;
