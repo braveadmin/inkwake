@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/braveadmin/inkwake/compare/v0.2.0...v0.3.0) (2026-11-25)
+
+
+### Features
+
+* **alarm:** per-alarm beep volume and ramp ([#43](https://github.com/braveadmin/inkwake/issues/43)) ([#60](https://github.com/braveadmin/inkwake/issues/60)) ([91c40e4](https://github.com/braveadmin/inkwake/commit/91c40e45c4a34847592abd113230cf18344a0f00))
+
 ## [0.2.0](https://github.com/braveadmin/inkwake/compare/v0.1.0...v0.2.0) (2026-11-25)
 
 
