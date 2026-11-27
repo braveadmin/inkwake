@@ -5,7 +5,7 @@ The scope. P0 and P1 make v1.0; P2 ships after it (M8). Each row is a GitHub iss
 | # | Feature | Done means | Priority | Milestone |
 | --- | --- | --- | --- | --- |
 | F1 | Multiple alarms | Any number of alarms (cap 16): label, time, weekday mask, sound, sunrise on/off, enabled | P0 | M3 |
-| F2 | Touch snooze/dismiss | Capacitive pads in the shell: tap top = snooze, hold 2 s = dismiss, side pad = night glow; audio stops on touch-down | P0 | M3 |
+| F2 | Touch snooze/dismiss | Capacitive pads in the shell: tap top = snooze, hold 2 s = dismiss, side pad = night glow; audio stops on touch-down | P0 | M7 |
 | F3 | Custom sounds | Ambient wake sounds from the TF card on the included speaker; fade in from near silence, gapless loops, firmer sound at alarm time; one wake sequence with F4 (see docs/sound.md) | P1 | M4 |
 | F4 | Sunrise light | Warm-white LEDs ramp up 20-30 min before the alarm, PWM via MOSFET on GPIO17, zero draw when off; shares the wake sequence with F3 | P1 | M4 |
 | F5 | Web UI over Wi-Fi | Woken on demand (hold side pad 5 s) for a few minutes; manage alarms, sounds, layout, settings; config export/import | P1 | M5 |
