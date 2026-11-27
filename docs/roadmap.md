@@ -38,6 +38,8 @@ F1, button menu (ADR-0018). Scheduler, snooze state machine, buzzer fallback, al
 
 **Exit gate:** A week of real use on the nightstand with zero missed alarms.
 
+Status: closed 2026-11-27. Gate passed: daily use on the nightstand with no missed alarms (user's call).
+
 ## M4 Sound and sunrise
 
 Effort: 3-4 weekends.
