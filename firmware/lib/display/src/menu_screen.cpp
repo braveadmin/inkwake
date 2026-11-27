@@ -58,6 +58,13 @@ constexpr int kButtonW = 120;
 constexpr int kButtonH = 34;
 constexpr int kButtonCx[] = {130, 270};  // Save, Cancel
 const char* const kButtonText[] = {"Save", "Cancel"};
+// Hold screen (#59): title, a row of segments, hint.
+constexpr int kHoldTitleBaseline = 105;
+constexpr int kHoldBarTop = 135;
+constexpr int kHoldBarH = 40;
+constexpr int kHoldBarW = 320;  // whole row
+constexpr int kHoldSegGap = 8;
+constexpr int kHoldHintBaseline = 225;
 constexpr int kDayBorder = 2;  // outline of a day that is off
 const char* const kDay2[] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
 
@@ -166,6 +173,13 @@ void draw_buttons_and_title(Framebuffer& fb, const char* title, const ButtonLabe
   draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kTitleBaseline, title);
 }
 
+void draw_outline(Framebuffer& fb, const Rect& r, int t) {
+  fb.fill(Rect{r.x, r.y, r.w, t}, true);
+  fb.fill(Rect{r.x, r.y + r.h - t, r.w, t}, true);
+  fb.fill(Rect{r.x, r.y, t, r.h}, true);
+  fb.fill(Rect{r.x + r.w - t, r.y, t, r.h}, true);
+}
+
 void draw_editor_buttons(Framebuffer& fb, int marked) {
   for (int b = 1; b <= 2; ++b) {
     const Rect r = editor_button_rect(b);
@@ -184,6 +198,38 @@ void draw_editor_buttons(Framebuffer& fb, int marked) {
 }
 
 }  // namespace
+
+Rect hold_segment_rect(int i, int total) {
+  if (total <= 0 || i < 0 || i >= total) return Rect{};
+  const int w = (kHoldBarW - (total - 1) * kHoldSegGap) / total;
+  const int row = total * w + (total - 1) * kHoldSegGap;
+  const int x0 = (Framebuffer::kWidth - row) / 2;
+  return Rect{x0 + i * (w + kHoldSegGap), kHoldBarTop, w, kHoldBarH};
+}
+
+Rect hold_bar_rect(int total) {
+  if (total <= 0) return Rect{};
+  return hold_segment_rect(0, total).united(hold_segment_rect(total - 1, total));
+}
+
+void render_hold(Framebuffer& fb, const HoldView& v) {
+  fb.clear();
+  draw_arrow(fb, kKeyButtonX);
+  if (v.title != nullptr) {
+    draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kHoldTitleBaseline, v.title);
+  }
+  for (int i = 0; i < v.total; ++i) {
+    const Rect r = hold_segment_rect(i, v.total);
+    if (i < v.steps) {
+      fb.fill(r, true);
+    } else {
+      draw_outline(fb, r, kDayBorder);
+    }
+  }
+  if (v.hint != nullptr) {
+    draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kHoldHintBaseline, v.hint);
+  }
+}
 
 Rect editor_button_rect(int button) {
   if (button != kEditorSave && button != kEditorCancel) return Rect{};

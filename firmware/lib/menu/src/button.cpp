@@ -54,6 +54,12 @@ void Button::pressed_since(uint32_t since_ms) {
   ignored_ = false;
 }
 
+int setup_hold_steps(uint32_t held_ms) {
+  if (held_ms < kMenuHoldMs) return -1;
+  const uint32_t steps = (held_ms - kMenuHoldMs) / kHoldStepMs;
+  return steps >= static_cast<uint32_t>(kHoldSteps) ? kHoldSteps : static_cast<int>(steps);
+}
+
 void Button::ignore_until_release() {
   if (stable_) ignored_ = true;
 }

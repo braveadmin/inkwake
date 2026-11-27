@@ -1168,6 +1168,26 @@ bool menu_action(const menu::Menu& m, menu::Action a, bool verbose) {
   return false;
 }
 
+// KEY held towards Wi-Fi setup (#59): `steps` from menu::setup_hold_steps,
+// `shown` the steps on the panel now (-1 = none), `release` what letting go
+// does before setup. Draws only when the step changes: the first and the last
+// in full, the ones between as a partial refresh of the segment row. Returns
+// the steps now shown.
+int show_hold_progress(int steps, int shown, const char* release) {
+  if (steps < 0 || steps == shown) return shown;
+  const bool full = steps >= menu::kHoldSteps;
+  render_hold(
+      g_fb, {full ? "Wi-Fi setup" : release, full ? "Let go to start" : "Keep holding: Wi-Fi setup",
+             steps, menu::kHoldSteps});
+  if (shown < 0 || full) {
+    g_lcd.refresh_full(g_fb);
+  } else {
+    const Rect bar = hold_bar_rect(menu::kHoldSteps);
+    g_lcd.refresh(g_fb, &bar, 1);
+  }
+  return steps;
+}
+
 // Runs the menu until it closes, 60 s pass without a press, or an alarm comes
 // due, then redraws the face (or opens Wi-Fi setup, if chosen). Called with
 // KEY up. Returns the NTP log letter of a sync after Wi-Fi setup, or 0.
@@ -1182,10 +1202,21 @@ char run_menu(menu::Menu& m, bool verbose) {
   uint32_t last_press = millis();
   uint32_t alarm_check = millis();
   bool setup = false;
+  int hold_shown = -1;  // first start: progress of KEY held towards Wi-Fi setup (#59)
   while (!m.closed()) {
     const uint32_t now = millis();
-    const menu::Gesture k = key.update(key_down(), now);
+    menu::Gesture k = key.update(key_down(), now);
     const menu::Gesture b = boot.update(boot_down(), now);
+    if (m.first_time() && key.down()) {
+      hold_shown =
+          show_hold_progress(menu::setup_hold_steps(key.held_ms(now)), hold_shown, "Let go: back");
+    }
+    if (k == menu::Gesture::Tap && hold_shown >= 0) {
+      // Let go before Wi-Fi setup: back to the same screen, no Next.
+      hold_shown = -1;
+      k = menu::Gesture::None;
+      draw_menu(m);
+    }
     if (k != menu::Gesture::None || b != menu::Gesture::None) last_press = now;
     // KEY moves the mark, BOOT acts on it (#55); BOOT held repeats only on
     // values (+1), never on Open, Save or a day on/off.
@@ -1244,14 +1275,16 @@ char run_set_time(bool welcome, bool verbose) {
 
 // KEY went down at `since_ms` with the face shown; waits for what it means:
 //   tap:  the date & time editor while the time is not set, else nothing
-//   2 s:  stops a snoozed alarm (ADR-0017); otherwise shows "Menu" and opens
-//         the menu on release
-//   5 s:  Wi-Fi setup
+//   2 s:  stops a snoozed alarm (ADR-0017); otherwise shows the hold screen
+//         and opens the menu on release
+//   2-5 s: the hold screen fills a segment every 0.5 s (#59)
+//   5 s:  Wi-Fi setup (not after a hold that stopped an alarm)
 // Returns the NTP log letter of a sync after Wi-Fi setup, or 0.
 char handle_face_key(uint32_t since_ms, bool verbose) {
   menu::Button key({menu::kMenuHoldMs, 0, 0});
   key.pressed_since(since_ms);
   bool stopped = false;
+  int shown = -1;
   for (;;) {
     const uint32_t now = millis();
     const menu::Gesture g = key.update(key_down(), now);
@@ -1265,9 +1298,6 @@ char handle_face_key(uint32_t since_ms, bool verbose) {
         update_display(false);
         stopped = true;
         if (verbose) Serial.print("alarm stopped\r\n");
-      } else {
-        render_message(g_fb, "Menu", "Keep holding for Wi-Fi setup");
-        g_lcd.refresh_full(g_fb);
       }
     }
     if (g == menu::Gesture::Release) {
@@ -1276,7 +1306,11 @@ char handle_face_key(uint32_t since_ms, bool verbose) {
       m.open(menu_context());
       return run_menu(m, verbose);
     }
-    if (key_down() && key.held_ms(now) >= menu::kSetupHoldMs) return run_setup(verbose);
+    if (!stopped && key.down()) {
+      const uint32_t held = key.held_ms(now);
+      shown = show_hold_progress(menu::setup_hold_steps(held), shown, "Let go: menu");
+      if (held >= menu::kSetupHoldMs) return run_setup(verbose);
+    }
     delay(10);
   }
 }
