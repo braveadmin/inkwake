@@ -510,7 +510,7 @@ static void test_editor_buttons() {
     TEST_ASSERT_TRUE(r.x >= 0 && r.x + r.w <= Framebuffer::kWidth &&
                      r.y + r.h <= Framebuffer::kHeight);
     TEST_ASSERT_TRUE(r.y > datetime_field_rect(4).y + datetime_field_rect(4).h);
-    const AlarmEditView v{6, 45, "Custom", 0x7F, 0, 0, 8, "Rising"};
+    const AlarmEditView v{6, 45, "Custom", 0x7F, 0, 0, 8, "Rising", "Off"};
     const Rect day = alarm_field_rect(v, 9);
     TEST_ASSERT_TRUE(r.y > day.y + day.h);
   }
@@ -534,7 +534,7 @@ static void test_editor_buttons() {
 static void test_alarm_edit_marks_field() {
   const uint8_t mask = 0x15;  // Mo We Fr
   for (int f = 0; f < 10; ++f) {
-    const AlarmEditView v{6, 45, "Custom", mask, f, 0, 8, "Rising"};
+    const AlarmEditView v{6, 45, "Custom", mask, f, 0, 8, "Rising", "Off"};
     render_alarm_edit(g_fb, "Edit alarm", v, {"Next", "hold: back", "+1"});
     for (int g = 0; g < 10; ++g) {
       const Rect r = alarm_field_rect(v, g);
@@ -553,7 +553,7 @@ static void test_alarm_edit_marks_field() {
     }
   }
   // Fields never overlap each other.
-  const AlarmEditView v{6, 45, "Weekend", 0, 0, 0, 8, "Rising"};
+  const AlarmEditView v{6, 45, "Weekend", 0, 0, 0, 8, "Rising", "Off"};
   for (int a = 0; a < 10; ++a) {
     for (int b = a + 1; b < 10; ++b) {
       const Rect ra = alarm_field_rect(v, a), rb = alarm_field_rect(v, b);
@@ -562,17 +562,19 @@ static void test_alarm_edit_marks_field() {
       TEST_ASSERT_FALSE(overlap);
     }
   }
-  TEST_ASSERT_TRUE(alarm_field_rect(v, 12).empty());
+  TEST_ASSERT_TRUE(alarm_field_rect(v, 13).empty());
 }
 
 static void test_alarm_edit_sound_page() {
-  for (int f : {kAlarmFieldVolume, kAlarmFieldRamp, -1}) {
-    const AlarmEditView v{6, 45, "Mon-Fri", 0x1F, f, f < 0 ? kEditorSave : 0, 3, "Rising"};
+  for (int f : {kAlarmFieldVolume, kAlarmFieldRamp, kAlarmFieldLead, -1}) {
+    const AlarmEditView v{6, 45,       "Mon-Fri", 0x1F, f, f < 0 ? kEditorSave : 0,
+                          3, "Rising", "20 min"};
     TEST_ASSERT_TRUE(alarm_sound_page(v));
     render_alarm_edit(g_fb, "Edit alarm", v, {"Next", "hold: back", "+1"});
     const Rect vol = alarm_field_rect(v, kAlarmFieldVolume);
     const Rect ramp = alarm_field_rect(v, kAlarmFieldRamp);
-    for (const Rect& r : {vol, ramp}) {
+    const Rect lead = alarm_field_rect(v, kAlarmFieldLead);
+    for (const Rect& r : {vol, ramp, lead}) {
       TEST_ASSERT_FALSE(r.empty());
       TEST_ASSERT_TRUE(r.x >= 0 && r.y >= 0 && r.x + r.w <= Framebuffer::kWidth &&
                        r.y + r.h <= Framebuffer::kHeight);
@@ -580,10 +582,12 @@ static void test_alarm_edit_sound_page() {
       TEST_ASSERT_TRUE(r.y + r.h <= b.y);  // above Save and Cancel
     }
     TEST_ASSERT_TRUE(vol.y + vol.h <= ramp.y);
+    TEST_ASSERT_TRUE(ramp.x + ramp.w <= lead.x);  // side by side
     TEST_ASSERT_EQUAL(f == kAlarmFieldVolume, g_fb.get(vol.x, vol.y));
     TEST_ASSERT_EQUAL(f == kAlarmFieldRamp, g_fb.get(ramp.x, ramp.y));
+    TEST_ASSERT_EQUAL(f == kAlarmFieldLead, g_fb.get(lead.x, lead.y));
   }
-  const AlarmEditView days{6, 45, "Mon-Fri", 0x1F, 2, 0, 3, "Rising"};
+  const AlarmEditView days{6, 45, "Mon-Fri", 0x1F, 2, 0, 3, "Rising", "Off"};
   TEST_ASSERT_FALSE(alarm_sound_page(days));
 }
 

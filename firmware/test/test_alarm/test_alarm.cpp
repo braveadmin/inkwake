@@ -139,6 +139,33 @@ void test_volume_levels() {
   TEST_ASSERT_TRUE(a.ramp);
 }
 
+void test_lead_in_fade() {
+  const Alarm a;
+  TEST_ASSERT_EQUAL_UINT8(0, a.lead_minutes);  // off unless chosen
+  TEST_ASSERT_TRUE(lead_valid(0));
+  TEST_ASSERT_TRUE(lead_valid(20));
+  TEST_ASSERT_FALSE(lead_valid(3));
+  // Level 8 (top -4 dBFS): -60 dBFS -> -19 dBFS, in half-dB steps.
+  TEST_ASSERT_EQUAL_UINT8(120, lead_atten_half_db(0, 600, kDefaultVolume));
+  TEST_ASSERT_EQUAL_UINT8(38, lead_atten_half_db(600, 600, kDefaultVolume));
+  TEST_ASSERT_EQUAL_UINT8(38, lead_atten_half_db(9999, 600, kDefaultVolume));
+  TEST_ASSERT_EQUAL_UINT8(79, lead_atten_half_db(300, 600, kDefaultVolume));  // halfway
+  // Ends 15 dB under the level's top: level 10 at -15, level 1 at -33 dBFS.
+  TEST_ASSERT_EQUAL_UINT8(30, lead_atten_half_db(1200, 1200, 10));
+  TEST_ASSERT_EQUAL_UINT8(66, lead_atten_half_db(300, 300, 1));
+  // A rising ring then starts 16 dB under the top: about where the lead-in ended.
+  TEST_ASSERT_EQUAL_UINT8(50, ring_volume(0, kDefaultVolume, true));  // -20 dBFS
+  // Never louder over time, one step at a time at most per second.
+  uint8_t prev = 255;
+  for (uint32_t t = 0; t <= 300; ++t) {
+    const uint8_t v = lead_atten_half_db(t, 300, 1);
+    TEST_ASSERT_TRUE(v <= prev);
+    TEST_ASSERT_TRUE(prev == 255 || prev - v <= 1);
+    prev = v;
+  }
+  TEST_ASSERT_EQUAL_UINT8(38, lead_atten_half_db(5, 0, kDefaultVolume));  // no lead: the end
+}
+
 void test_ring_volume_ramps_and_caps() {
   // Default level 8 keeps the behaviour before #43: 50 % -> 90 %.
   TEST_ASSERT_EQUAL_UINT8(50, ring_volume(0, kDefaultVolume, true));
@@ -188,6 +215,7 @@ int main(int, char**) {
   RUN_TEST(test_ringer_dismiss);
   RUN_TEST(test_ringer_unattended_auto_snoozes_then_gives_up);
   RUN_TEST(test_volume_levels);
+  RUN_TEST(test_lead_in_fade);
   RUN_TEST(test_ring_volume_ramps_and_caps);
   RUN_TEST(test_ring_volume_steady);
   RUN_TEST(test_beep_pattern);

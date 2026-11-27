@@ -26,7 +26,7 @@ constexpr size_t kMaxAlarms = 16;
 constexpr size_t kMaxLabel = 23;  // bytes (UTF-8)
 constexpr size_t kMaxSound = 15;
 constexpr int64_t kMaxLateS = 120;
-constexpr size_t kBlobFixed = 9;  // bytes per alarm in encode() besides label and sound
+constexpr size_t kBlobFixed = 10;  // bytes per alarm in encode() besides label and sound
 
 // First instant strictly after `after_utc` at which `a` fires. nullopt when
 // disabled.
@@ -59,6 +59,13 @@ struct Upcoming {
 std::optional<Upcoming> upcoming(const std::vector<Alarm>& alarms, const tz::Zone& zone,
                                  int64_t now_utc);
 
+// Lead-in (#4): the alarm whose lead-in window holds now_utc, i.e. its next
+// ring is at most lead_minutes ahead. The earliest ring wins, ties go to the
+// lowest index. Rings in `skip` (BOOT skip) and `quiet` (lead-in quieted with
+// a KEY tap) are left out. fire_utc is the ring the lead-in leads to.
+std::optional<Upcoming> lead_in(const std::vector<Alarm>& alarms, const tz::Zone& zone,
+                                int64_t now_utc, const Skip& skip = {}, const Skip& quiet = {});
+
 enum class SkipState : uint8_t {
   None,     // no skip set
   Pending,  // the skipped ring is still ahead
@@ -82,10 +89,11 @@ std::optional<size_t> find(const std::vector<Alarm>& alarms, uint8_t id);
 // otherwise a short English reason.
 const char* check(const Alarm& a);
 
-// NVS blob: "AL", version 2, count, then per alarm id, flags (bit0 enabled,
-// bit1 ramp), hour, minute, days, sunrise_minutes, volume, label length +
-// bytes, sound length + bytes. Version 1 (before #43, no volume byte, ramp
-// bit unused) still decodes, with the default volume and ramp.
+// NVS blob: "AL", version 3, count, then per alarm id, flags (bit0 enabled,
+// bit1 ramp), hour, minute, days, sunrise_minutes, volume, lead_minutes,
+// label length + bytes, sound length + bytes. Older versions still decode:
+// 2 (before #4) has no lead byte (no lead-in), 1 (before #43) no volume byte
+// either (default volume, rising).
 std::vector<uint8_t> encode(const std::vector<Alarm>& alarms);
 // False on a bad header, version, length or field; `out` is then untouched.
 bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out);

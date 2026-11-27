@@ -4,7 +4,7 @@ The included 8 ohm 2 W speaker is loud enough (about 80 dB at 1 m on battery). H
 
 - [ ] **Sealed back chamber.** Give the speaker a sealed 30-50 cm3 chamber in the shell with an open grille. The chamber matters more than the speaker; an open back sounds tinny.
 - [ ] **High-pass around 200 Hz.** Filter in firmware so the speaker doesn't distort chasing bass it can't produce.
-- [ ] **Fade in from near silence.** 2-5 min, using the codec's fine volume steps at the quiet end, where smoothness matters most.
+- [x] **Fade in from near silence.** The lead-in (#4, below) fades from -60 dBFS over 5-20 min with the codec's 0.5 dB volume steps, so the quiet end stays smooth.
 - [ ] **Sounds that suit a small speaker.** Birdsong, light rain, chimes, singing bowls, soft piano. Avoid ocean waves, thunder, deep drones and bass-heavy music.
 - [ ] **Gapless loops at 22-44 kHz.** WAV from flash (#44, ADR-0006 amendment); no audible seam when a loop restarts. The firmware loops without a gap; a seam in the recording itself still shows, so cut loops at zero crossings.
 - [ ] **Budget the battery.** A 20-30 min ambient lead-in at low volume costs about 25-50 mAh, similar to a day of standby. Default to ~10 min of sound inside a longer light ramp.
@@ -12,6 +12,16 @@ The included 8 ohm 2 W speaker is loud enough (about 80 dB at 1 m on battery). H
 ## Wake sequence (F3 + F4)
 
 One setting per alarm: the light ramps up over 20-30 min, ambient sound fades in for the last ~10 min, and a firmer sound plays at alarm time if not yet dismissed.
+
+### Lead-in (#4)
+
+The sound part is there; the light follows with F4 (#5).
+
+- **Setting:** per alarm, Off (default) or 5, 10, 15, 20 min. Button menu: Alarms > an alarm > Edit, second page, "Lead-in". Setup page: the alarm's Lead-in list. Serial: `alarm lead ID 10`, `alarm lead ID 0` turns it off.
+- **What you hear:** the alarm's own sound (your file or the beep) starts that many minutes early, almost inaudible, and grows steadily to about 15 dB under the alarm's volume. At the alarm time it rings on without a gap: "rising" carries on from there, "steady" steps up to its full level. Pick a gentle file for alarms with a lead-in; a beep fading in works, but is not soothing.
+- **Buttons:** tap KEY to quiet the lead-in (the alarm still rings at its time). Hold KEY 2 s, or tap BOOT, to skip this ring altogether (the face shows the crossed-out bell; BOOT again undoes it).
+- **Battery:** the clock stays awake with the amp on while it plays: roughly 10-15 mAh for 10 min, less than a day of standby. Skipped when the battery is critical; the alarm itself still rings.
+- **Log:** `log` shows `L` in the alarm column on the wake where a lead-in began.
 
 ## Alarm sound files (#44)
 

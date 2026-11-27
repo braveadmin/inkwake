@@ -28,6 +28,21 @@ uint8_t preset_days(DaysPreset p) {
 
 const char* ramp_name(bool ramp) { return ramp ? "Rising" : "Steady"; }
 
+const char* lead_name(uint8_t minutes) {
+  switch (minutes) {
+    case 5:
+      return "5 min";
+    case 10:
+      return "10 min";
+    case 15:
+      return "15 min";
+    case 20:
+      return "20 min";
+    default:
+      return "Off";
+  }
+}
+
 DaysPreset preset_of(uint8_t days) {
   days &= kEveryDay;
   if (days == kOneShot) return DaysPreset::Once;
@@ -85,13 +100,14 @@ AlarmEdit::AlarmEdit(const Alarm& a)
       preset_(preset_of(a.days)),
       custom_(a.days == kOneShot ? kNewAlarmDays : static_cast<uint8_t>(a.days & kEveryDay)),
       volume_(a.volume >= kMinVolume && a.volume <= kMaxVolume ? a.volume : kDefaultVolume),
-      ramp_(a.ramp) {}
+      ramp_(a.ramp),
+      lead_(lead_valid(a.lead_minutes) ? a.lead_minutes : 0) {}
 
 uint8_t AlarmEdit::days() const {
   return preset_ == DaysPreset::Custom ? custom_ : preset_days(preset_);
 }
 
-bool AlarmEdit::last_field() const { return field_ == AlarmField::Ramp; }
+bool AlarmEdit::last_field() const { return field_ == AlarmField::Lead; }
 
 void AlarmEdit::increment() {
   switch (field_) {
@@ -111,6 +127,13 @@ void AlarmEdit::increment() {
     case AlarmField::Ramp:
       ramp_ = !ramp_;
       break;
+    case AlarmField::Lead: {
+      constexpr size_t kN = sizeof kLeadChoices / sizeof kLeadChoices[0];
+      size_t i = 0;
+      while (i < kN && kLeadChoices[i] != lead_) ++i;
+      lead_ = kLeadChoices[(i + 1) % kN];  // an unknown value counts as the last: on to Off
+      break;
+    }
     default: {
       const int d = static_cast<int>(field_) - static_cast<int>(AlarmField::Mon);
       custom_ = static_cast<uint8_t>(custom_ ^ (1u << d));

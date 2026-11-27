@@ -585,6 +585,10 @@ static void test_alarm_edit_fields() {
   TEST_ASSERT_TRUE(e.sound_page());
   TEST_ASSERT_TRUE(e.next_field());
   TEST_ASSERT_EQUAL(AlarmField::Ramp, e.field());
+  TEST_ASSERT_FALSE(e.last_field());
+  TEST_ASSERT_TRUE(e.next_field());
+  TEST_ASSERT_EQUAL(AlarmField::Lead, e.field());
+  TEST_ASSERT_TRUE(e.sound_page());
   TEST_ASSERT_TRUE(e.last_field());
   TEST_ASSERT_FALSE(e.next_field());
   TEST_ASSERT_EQUAL_UINT8(TUE | WED | THU | FRI | SUN, e.days());
@@ -624,6 +628,25 @@ static void test_alarm_edit_volume() {
   TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, AlarmEdit(a).volume());
 }
 
+static void test_alarm_edit_lead() {
+  Alarm a = alarm(1, 7, 0, kWeekdays);
+  AlarmEdit e(a);
+  TEST_ASSERT_EQUAL_UINT8(0, e.lead());  // off unless chosen
+  moves_edit(e, 5);                      // hour, minute, days, volume, ramp -> lead-in
+  TEST_ASSERT_EQUAL(AlarmField::Lead, e.field());
+  const uint8_t want[] = {5, 10, 15, 20, 0};
+  for (uint8_t w : want) {
+    e.increment();
+    TEST_ASSERT_EQUAL_UINT8(w, e.lead());
+  }
+  TEST_ASSERT_EQUAL_STRING("Off", lead_name(0));
+  TEST_ASSERT_EQUAL_STRING("15 min", lead_name(15));
+  a.lead_minutes = 10;
+  TEST_ASSERT_EQUAL_UINT8(10, AlarmEdit(a).lead());
+  a.lead_minutes = 7;  // not a choice: off
+  TEST_ASSERT_EQUAL_UINT8(0, AlarmEdit(a).lead());
+}
+
 static void test_alarm_volume_in_menu() {
   Menu m;
   open_alarms(m, alarm_ctx(1));
@@ -640,10 +663,16 @@ static void test_alarm_volume_in_menu() {
   TEST_ASSERT_EQUAL_STRING("Change", m.boot_label());
   TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));  // steady
   m.handle(Input::Move);
+  TEST_ASSERT_EQUAL(AlarmField::Lead, m.alarm_edit().field());
+  TEST_ASSERT_EQUAL_STRING("Change", m.boot_label());
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));  // 5 min
+  TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));  // 10 min
+  m.handle(Input::Move);
   TEST_ASSERT_EQUAL(EditorButton::Save, m.editor_button());
   TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
   TEST_ASSERT_EQUAL_UINT8(kDefaultVolume + 1, m.alarms()[0].volume);
   TEST_ASSERT_FALSE(m.alarms()[0].ramp);
+  TEST_ASSERT_EQUAL_UINT8(10, m.alarms()[0].lead_minutes);
 }
 
 static void test_alarm_add_defaults() {
@@ -664,7 +693,7 @@ static void test_alarm_add_defaults() {
   TEST_ASSERT_EQUAL(AlarmField::Days, m.alarm_edit().field());
   TEST_ASSERT_EQUAL_STRING("Change", m.boot_label());
   TEST_ASSERT_FALSE(m.repeats());
-  moves(m, 3);  // volume, ramp, Save
+  moves(m, 4);  // volume, ramp, lead-in, Save
   TEST_ASSERT_EQUAL(EditorButton::Save, m.editor_button());
   TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
   TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
@@ -687,7 +716,7 @@ static void test_alarm_add_cancel_saves_nothing() {
   moves(m, 2);
   m.handle(Input::Act);  // Add alarm
   m.handle(Input::Act);
-  moves(m, 6);  // hour, minute, days, volume, ramp, Save -> Cancel
+  moves(m, 7);  // hour, minute, days, volume, ramp, lead-in, Save -> Cancel
   TEST_ASSERT_EQUAL(EditorButton::Cancel, m.editor_button());
   TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));
   TEST_ASSERT_EQUAL(Screen::Alarms, m.screen());
@@ -731,7 +760,7 @@ static void test_alarm_edit_keeps_id_and_label() {
   m.handle(Input::Act);  // 06:31
   m.handle(Input::Move);
   m.handle(Input::Act);  // Weekend
-  moves(m, 3);           // volume, ramp, Save
+  moves(m, 4);           // volume, ramp, lead-in, Save
   TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
   const Alarm& a = m.alarms()[1];
   TEST_ASSERT_EQUAL_UINT8(2, a.id);
@@ -755,7 +784,7 @@ static void test_alarm_custom_days_in_menu() {
   TEST_ASSERT_EQUAL_STRING("On/off", m.boot_label());
   TEST_ASSERT_FALSE(m.repeats());
   m.handle(Input::Act);  // Monday off
-  moves(m, 9);           // Tue .. Sun, volume, ramp, then Save
+  moves(m, 10);          // Tue .. Sun, volume, ramp, lead-in, then Save
   TEST_ASSERT_EQUAL(EditorButton::Save, m.editor_button());
   TEST_ASSERT_EQUAL(Action::SaveAlarms, m.handle(Input::Act));
   TEST_ASSERT_EQUAL_UINT8(TUE | WED | THU | FRI, m.alarms()[0].days);
@@ -771,7 +800,7 @@ static void test_alarm_edit_back_keeps_alarm() {
   TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
   TEST_ASSERT_EQUAL_UINT8(6, m.alarms()[0].hour);
   m.handle(Input::Act);  // Edit again: Cancel
-  moves(m, 6);
+  moves(m, 7);           // hour, minute, days, volume, ramp, lead-in, Save -> Cancel
   TEST_ASSERT_EQUAL(Action::None, m.handle(Input::Act));
   TEST_ASSERT_EQUAL(Screen::AlarmItem, m.screen());
 }
@@ -932,6 +961,7 @@ int main() {
   RUN_TEST(test_days_presets_and_text);
   RUN_TEST(test_alarm_edit_fields);
   RUN_TEST(test_alarm_edit_volume);
+  RUN_TEST(test_alarm_edit_lead);
   RUN_TEST(test_alarm_volume_in_menu);
   RUN_TEST(test_alarm_add_defaults);
   RUN_TEST(test_alarm_add_cancel_saves_nothing);

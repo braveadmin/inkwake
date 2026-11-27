@@ -44,14 +44,17 @@ constexpr int kDayGap = 6;
 constexpr int kDayTextDy = 22;  // text baseline below the cell top
 constexpr int kDayBarGap = 3;   // bar under the day being changed
 constexpr int kDayBarH = 4;
-// Alarm editor, second page (#43): volume digits, ten level cells, ramp.
+// Alarm editor, second page (#43): volume digits, ten level cells, then ramp
+// and lead-in (#4) side by side under small labels, over Save and Cancel.
 constexpr int kVolumeBaseline = 145;
 constexpr int kVolumeLabelGap = 16;  // "Volume" to the left of the digits
-constexpr int kLevelTop = 162;
+constexpr int kLevelTop = 158;
 constexpr int kLevelW = 26;
-constexpr int kLevelH = 18;
+constexpr int kLevelH = 16;
 constexpr int kLevelGap = 4;
-constexpr int kRampBaseline = 222;
+constexpr int kOptionLabelBaseline = 196;
+constexpr int kOptionBaseline = 234;
+constexpr int kOptionCx[] = {130, 270};  // ramp, lead-in: over Save and Cancel
 // Save and Cancel, both editors: outlined, filled when marked.
 constexpr int kButtonsBaseline = 284;
 constexpr int kButtonW = 120;
@@ -305,6 +308,22 @@ Rect text30_rect(const char* text, int baseline) {
 
 Rect preset_rect(const char* days) { return text30_rect(days, kPresetBaseline); }
 
+// Black mark around 30 px text centred on x = cx.
+Rect text30_rect_at(int cx, const char* text, int baseline) {
+  Rect r = text30_rect(text, baseline);
+  r.x += cx - Framebuffer::kWidth / 2;
+  return r;
+}
+
+// Ramp (i = 0) or lead-in (i = 1) on the second page, under its label.
+void draw_option(Framebuffer& fb, int i, const char* label, const char* value, bool marked) {
+  draw_text_centered(fb, fonts::kText20, kOptionCx[i], kOptionLabelBaseline, label);
+  if (marked) fb.fill(text30_rect_at(kOptionCx[i], value, kOptionBaseline), true);
+  draw_text_centered(fb, fonts::kText30, kOptionCx[i], kOptionBaseline, value, !marked);
+}
+
+const char* lead_text(const AlarmEditView& v) { return v.lead != nullptr ? v.lead : "Off"; }
+
 // The volume field: always two digits wide, so the mark does not jump at 10.
 Rect volume_rect() {
   return mark_rect((Framebuffer::kWidth - digits_w(2)) / 2, digits_w(2), kVolumeBaseline);
@@ -342,11 +361,8 @@ void draw_sound_page(Framebuffer& fb, const AlarmEditView& v) {
       fb.fill(Rect{lx + kLevelW - kDayBorder, kLevelTop, kDayBorder, kLevelH}, true);
     }
   }
-  const char* ramp = v.ramp != nullptr ? v.ramp : "";
-  const bool ramp_marked = v.field == kAlarmFieldRamp;
-  if (ramp_marked) fb.fill(text30_rect(ramp, kRampBaseline), true);
-  draw_text_centered(fb, fonts::kText30, Framebuffer::kWidth / 2, kRampBaseline, ramp,
-                     !ramp_marked);
+  draw_option(fb, 0, "Ramp", v.ramp != nullptr ? v.ramp : "", v.field == kAlarmFieldRamp);
+  draw_option(fb, 1, "Lead-in", lead_text(v), v.field == kAlarmFieldLead);
 }
 
 }  // namespace
@@ -362,7 +378,10 @@ Rect alarm_field_rect(const AlarmEditView& v, int field) {
     return Rect{day_x(field - 3), top, kDayW, kDayH + kDayBarGap + kDayBarH};
   }
   if (field == kAlarmFieldVolume) return volume_rect();
-  if (field == kAlarmFieldRamp) return text30_rect(v.ramp != nullptr ? v.ramp : "", kRampBaseline);
+  if (field == kAlarmFieldRamp) {
+    return text30_rect_at(kOptionCx[0], v.ramp != nullptr ? v.ramp : "", kOptionBaseline);
+  }
+  if (field == kAlarmFieldLead) return text30_rect_at(kOptionCx[1], lead_text(v), kOptionBaseline);
   return Rect{};
 }
 

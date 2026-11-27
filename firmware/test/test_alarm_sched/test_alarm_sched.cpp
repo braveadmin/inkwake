@@ -202,6 +202,7 @@ void test_codec_round_trip() {
   v[1].sound = "birds";
   v[1].volume = 3;
   v[1].ramp = false;
+  v[1].lead_minutes = 15;
   const auto blob = encode(v);
   std::vector<Alarm> out;
   TEST_ASSERT_TRUE(decode(blob.data(), blob.size(), out));
@@ -216,6 +217,8 @@ void test_codec_round_trip() {
   TEST_ASSERT_TRUE(out[0].ramp);
   TEST_ASSERT_EQUAL_UINT8(3, out[1].volume);
   TEST_ASSERT_FALSE(out[1].ramp);
+  TEST_ASSERT_EQUAL_UINT8(0, out[0].lead_minutes);
+  TEST_ASSERT_EQUAL_UINT8(15, out[1].lead_minutes);
 }
 
 void test_codec_reads_version_1() {
@@ -235,8 +238,71 @@ void test_codec_reads_version_1() {
   TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, out[1].volume);
   TEST_ASSERT_TRUE(out[1].ramp);
   TEST_ASSERT_EQUAL_STRING("default", out[1].sound.c_str());
-  // Saving it again writes version 2.
-  TEST_ASSERT_EQUAL_UINT8(2, encode(out)[2]);
+  // Saving it again writes the current version.
+  TEST_ASSERT_EQUAL_UINT8(3, encode(out)[2]);
+}
+
+void test_codec_reads_version_2() {
+  // A blob saved before #4: volume byte, no lead-in byte. No lead-in.
+  const std::vector<uint8_t> v2{'A', 'L', 2, 1, 4,   3,   6,   30,  kWeekdays,
+                                0,   5,   0, 5, 'b', 'i', 'r', 'd', 's'};
+  std::vector<Alarm> out;
+  TEST_ASSERT_TRUE(decode(v2.data(), v2.size(), out));
+  TEST_ASSERT_EQUAL_UINT32(1, out.size());
+  TEST_ASSERT_EQUAL_UINT8(4, out[0].id);
+  TEST_ASSERT_TRUE(out[0].ramp);
+  TEST_ASSERT_EQUAL_UINT8(5, out[0].volume);
+  TEST_ASSERT_EQUAL_UINT8(0, out[0].lead_minutes);
+  TEST_ASSERT_EQUAL_STRING("birds", out[0].sound.c_str());
+}
+
+void test_check_lead() {
+  Alarm a = make(1, 7, 0, kWeekdays);
+  for (uint8_t m : {0, 5, 10, 15, 20}) {
+    a.lead_minutes = m;
+    TEST_ASSERT_NULL(check(a));
+  }
+  for (uint8_t m : {1, 7, 25, 30, 255}) {
+    a.lead_minutes = m;
+    TEST_ASSERT_NOT_NULL(check(a));
+  }
+}
+
+void test_lead_in_window() {
+  std::vector<Alarm> v{make(1, 7, 0, kWeekdays)};
+  const int64_t at = utc(2026, 11, 23, 6, 0);                     // Mon 07:00 CET
+  TEST_ASSERT_FALSE(lead_in(v, berlin(), at - 600).has_value());  // lead-in off
+  v[0].lead_minutes = 10;
+  TEST_ASSERT_FALSE(lead_in(v, berlin(), at - 601).has_value());
+  auto l = lead_in(v, berlin(), at - 600);  // the minute wake at 06:50
+  TEST_ASSERT_TRUE(l.has_value());
+  TEST_ASSERT_EQUAL_UINT32(0, l->index);
+  TEST_ASSERT_EQUAL_INT64(at, l->fire_utc);
+  TEST_ASSERT_TRUE(lead_in(v, berlin(), at - 1).has_value());
+  // At the alarm time it is due, not leading in (the next ring is tomorrow).
+  TEST_ASSERT_FALSE(lead_in(v, berlin(), at).has_value());
+  // Skipped (BOOT) or quieted (KEY tap): only that ring.
+  TEST_ASSERT_FALSE(lead_in(v, berlin(), at - 300, Skip{1, at}).has_value());
+  TEST_ASSERT_FALSE(lead_in(v, berlin(), at - 300, {}, Skip{1, at}).has_value());
+  TEST_ASSERT_TRUE(lead_in(v, berlin(), at - 300, {}, Skip{1, at - 86400}).has_value());
+  TEST_ASSERT_TRUE(lead_in(v, berlin(), at + 86400 - 300, {}, Skip{1, at}).has_value());
+  // Turned off: none.
+  v[0].enabled = false;
+  TEST_ASSERT_FALSE(lead_in(v, berlin(), at - 300).has_value());
+}
+
+void test_lead_in_picks_earliest_ring() {
+  std::vector<Alarm> v{make(1, 7, 10, kEveryDay), make(2, 7, 5, kEveryDay),
+                       make(3, 7, 0, kEveryDay)};
+  v[0].lead_minutes = 20;
+  v[1].lead_minutes = 10;  // alarm 3 has none
+  const int64_t at = utc(2026, 11, 23, 6, 0);
+  auto l = lead_in(v, berlin(), at - 120);  // 06:58: both windows open
+  TEST_ASSERT_EQUAL_UINT32(1, l->index);
+  // Alarm 2's ring quieted: alarm 1's lead-in instead.
+  l = lead_in(v, berlin(), at - 120, {}, Skip{2, at + 300});
+  TEST_ASSERT_EQUAL_UINT32(0, l->index);
+  TEST_ASSERT_EQUAL_INT64(at + 600, l->fire_utc);
 }
 
 void test_check_volume() {
@@ -256,7 +322,7 @@ void test_codec_rejects_bad_blobs() {
   auto blob = encode(v);
   std::vector<Alarm> out{make(5, 1, 1, 0)};
   auto bad = blob;
-  bad[2] = 3;  // version
+  bad[2] = 4;  // version
   TEST_ASSERT_FALSE(decode(bad.data(), bad.size(), out));
   bad = blob;
   bad.pop_back();  // truncated
@@ -344,6 +410,10 @@ int main(int, char**) {
   RUN_TEST(test_check);
   RUN_TEST(test_codec_round_trip);
   RUN_TEST(test_codec_reads_version_1);
+  RUN_TEST(test_codec_reads_version_2);
+  RUN_TEST(test_check_lead);
+  RUN_TEST(test_lead_in_window);
+  RUN_TEST(test_lead_in_picks_earliest_ring);
   RUN_TEST(test_check_volume);
   RUN_TEST(test_codec_rejects_bad_blobs);
   RUN_TEST(test_parse_time);

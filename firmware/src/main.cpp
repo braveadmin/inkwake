@@ -117,7 +117,7 @@ constexpr int kKeyPin = 18;  // active low, external pull-up; wakes from deep sl
 constexpr int kBootPin = 0;  // active low, external pull-up; wakes from deep sleep (#55)
 constexpr int kAmpPin = 46;  // speaker amp enable, held low in sleep
 constexpr int kBatPin = 4;   // battery sense, 1:3 divider
-constexpr uint32_t kMagic = 0x1A7E0023;       // changed with the RtcState layout
+constexpr uint32_t kMagic = 0x1A7E0024;       // changed with the RtcState layout
 constexpr time_t kMinValidTime = 1735689600;  // 2025-01-01: older means the clock was reset
 constexpr uint32_t kWakeMarginUs = 20'000;    // timer-only wake: just after the minute turns
 // Fallback timer when the RTC interrupt is armed. Late enough that the ESP32's
@@ -140,7 +140,7 @@ struct WakeEntry {
   char ntp_result;    // 0 = no sync on this wake, else ntp_sync::status_letter()
   uint16_t awake_ms;  // from boot to the display update done
   uint16_t bat_mv;
-  char alarm;  // A = an alarm started ringing, S = a snooze ended, 0 = none
+  char alarm;  // A = an alarm started ringing, S = a snooze ended, L = a lead-in began, 0 = none
 };
 constexpr size_t kLogLen = 32;
 constexpr uint8_t kFullRefresh = 0xFF;
@@ -232,6 +232,8 @@ struct RtcState {
   int64_t drift_at;       // UTC of that measurement
   // BOOT skip (#55): this ring of this alarm is skipped; id 0 = none.
   sched::Skip skip;
+  // Lead-in (#4) quieted with a KEY tap for this ring; it still rings.
+  sched::Skip lead_quiet;
 };
 constexpr int32_t kNoDrift = INT32_MIN;
 // `= {}` makes this a constant initialization. Without it, FaceState's member
@@ -881,8 +883,16 @@ class Ring {
       }
       audio::end();
       audio::begin();
+      audio::set_attenuation(atten_);  // a lead-in stays quiet with the beep
     }
     audio::beep(ms, pct, pos_ms_);
+  }
+
+  // Codec attenuation for the lead-in (#4), in 0.5 dB steps; 0 for ringing.
+  void set_atten(uint8_t half_db) {
+    if (half_db == atten_) return;
+    atten_ = half_db;
+    audio::set_attenuation(half_db);
   }
 
   void stop() {
@@ -893,6 +903,7 @@ class Ring {
  private:
   sound_files::Player player_;
   uint32_t pos_ms_ = 0;
+  uint8_t atten_ = 0;
   char name_[sound::kMaxName + 1] = "";
 };
 
@@ -908,8 +919,9 @@ bool play_level(uint8_t level, uint32_t ms, const char* sound_name = sound::kDef
 
 // Plays the alarm's sound until it is snoozed, stopped or gives up, then
 // redraws the face. A KEY press already down when ringing starts counts only
-// after its release.
-void ring_loop() {
+// after its release. `lead`: the sound of the alarm's lead-in (#4), already
+// playing; it rings on without a gap.
+void ring_loop(Ring* lead = nullptr) {
   // The ringing alarm's volume (#43) and sound (#44); `alarm test` and a
   // deleted alarm ring with the defaults.
   uint8_t level = kDefaultVolume;
@@ -920,8 +932,10 @@ void ring_loop() {
     ramp = g_alarms[*i].ramp;
     sound_name = g_alarms[*i].sound;
   }
-  Ring ring;
-  const bool audible = ring.start(sound_name.c_str());
+  Ring own;
+  Ring& ring = lead != nullptr ? *lead : own;
+  const bool audible = lead != nullptr || ring.start(sound_name.c_str());
+  ring.set_atten(0);  // loudness from here on: ring_volume, in the samples
   if (HWCDC::isPlugged()) {
     Serial.printf("alarm ringing%s: tap KEY to snooze, hold 2 s to stop\r\n",
                   audible ? "" : " (no sound: speaker codec did not answer)");
@@ -1034,10 +1048,11 @@ void setup_alarms_json(char* buf, size_t n) {
     }
     snprintf(item, sizeof item,
              "%s{\"id\":%u,\"time\":\"%02u:%02u\",\"days\":\"%s\",\"mask\":%u,\"on\":%s,"
-             "\"label\":\"%s\",\"next\":\"%s\",\"volume\":%u,\"ramp\":%s,\"sound\":\"%s\"}",
+             "\"label\":\"%s\",\"next\":\"%s\",\"volume\":%u,\"ramp\":%s,\"sound\":\"%s\","
+             "\"lead\":%u}",
              out.size() > 1 ? "," : "", a.id, a.hour, a.minute, sched::format_days(a.days).c_str(),
              a.days, a.enabled ? "true" : "false", label, next, a.volume, a.ramp ? "true" : "false",
-             a.sound.c_str());                     // sound names need no escaping
+             a.sound.c_str(), a.lead_minutes);     // sound names need no escaping
     if (out.size() + strlen(item) + 2 > n) break;  // cannot happen with 16 alarms in 6 KB
     out += item;
   }
@@ -1054,13 +1069,24 @@ bool parse_volume(const char* s, uint8_t& level) {
   return true;
 }
 
+// "0", "5", "10", "15", "20" -> lead-in minutes (#4). False on anything else.
+bool parse_lead(const char* s, uint8_t& minutes) {
+  char* end = nullptr;
+  const long v = strtol(s, &end, 10);
+  if (end == s || *end != '\0' || v < 0 || v > 255 || !lead_valid(static_cast<uint8_t>(v))) {
+    return false;
+  }
+  minutes = static_cast<uint8_t>(v);
+  return true;
+}
+
 // POST /api/alarms: op=add|save|del, id, time=HH:MM, days (parse_days form), label, on=1|0,
-// volume=1..10 and ramp=1|0 (#43), sound=NAME (#44; these three are kept as
-// they are when left out, defaults on add). op=test&volume=N[&sound=NAME]
+// volume=1..10 and ramp=1|0 (#43), sound=NAME (#44), lead=0|5|10|15|20 (#4; these four are
+// kept as they are when left out, defaults on add). op=test&volume=N[&sound=NAME]
 // plays that sound at that level for a few seconds without saving.
 const char* setup_alarm_edit(const char* form) {
   char op[8] = "", id_s[8] = "", time_s[8] = "", days_s[48] = "", on_s[4] = "1";
-  char vol_s[8] = "", ramp_s[4] = "", sound_s[sound::kMaxName + 1] = "";
+  char vol_s[8] = "", ramp_s[4] = "", sound_s[sound::kMaxName + 1] = "", lead_s[8] = "";
   char label[sched::kMaxLabel + 1] = "";
   provision::form_value(form, "op", op, sizeof op);
   provision::form_value(form, "id", id_s, sizeof id_s);
@@ -1069,6 +1095,9 @@ const char* setup_alarm_edit(const char* form) {
   const bool has_sound =
       provision::form_value(form, "sound", sound_s, sizeof sound_s) && sound_s[0];
   if (has_sound && !sound::alarm_sound_valid(sound_s)) return "unknown sound";
+  const bool has_lead = provision::form_value(form, "lead", lead_s, sizeof lead_s) && lead_s[0];
+  uint8_t lead = 0;
+  if (has_lead && !parse_lead(lead_s, lead)) return "lead-in 0, 5, 10, 15 or 20 min";
   uint8_t level = kDefaultVolume;
   if (has_vol && !parse_volume(vol_s, level)) return "volume 1-10";
   if (strcmp(op, "test") == 0) {
@@ -1114,6 +1143,7 @@ const char* setup_alarm_edit(const char* form) {
     if (has_vol) a->volume = level;
     if (has_ramp) a->ramp = strcmp(ramp_s, "0") != 0;
     if (has_sound) a->sound = sound_s;
+    if (has_lead) a->lead_minutes = lead;
     if (const char* why = sched::check(*a)) return why;
   }
   if (!save_alarms(v)) return "saved until power-off only (NVS write failed)";
@@ -1186,11 +1216,12 @@ void draw_menu(const menu::Menu& m) {
         menu_buttons(m));
   } else if (m.screen() == menu::Screen::AlarmEdit) {
     const menu::AlarmEdit& e = m.alarm_edit();
-    render_alarm_edit(g_fb, m.title(),
-                      {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
-                       editor_field(m, static_cast<int>(e.field())),
-                       static_cast<int>(m.editor_button()), e.volume(), menu::ramp_name(e.ramp())},
-                      menu_buttons(m));
+    render_alarm_edit(
+        g_fb, m.title(),
+        {e.hour(), e.minute(), menu::preset_name(e.preset()), e.days(),
+         editor_field(m, static_cast<int>(e.field())), static_cast<int>(m.editor_button()),
+         e.volume(), menu::ramp_name(e.ramp()), menu::lead_name(e.lead())},
+        menu_buttons(m));
   } else {
     const char* items[menu::kMaxListItems];
     const size_t n = m.count();
@@ -1394,6 +1425,96 @@ char handle_face_key(uint32_t since_ms, bool verbose) {
   }
 }
 
+// ---- Lead-in (#4) ----
+
+// Plays the lead-in of the alarm whose window holds now, if any: the alarm's
+// own sound fades in from near silence (codec attenuation, lead_atten_half_db)
+// until the alarm time, then rings on without a gap (ring_loop). KEY tap
+// quiets the lead-in only, the alarm still rings at its time; KEY held 2 s or
+// a BOOT tap skips this ring, as BOOT on the face does. Not while the time is
+// not set, an alarm rings or snoozes, or the battery is critical. Returns
+// true if a lead-in played, after it was quieted, skipped or rang out.
+bool run_lead_in(bool verbose) {
+  if (!g_rtc.time_set || g_rtc.ring.state != RingState::Idle || battery_critical()) return false;
+  update_skip(time(nullptr));
+  const auto l = sched::lead_in(g_alarms, g_zone, time(nullptr), g_rtc.skip, g_rtc.lead_quiet);
+  if (!l) return false;
+  const Alarm a = g_alarms[l->index];  // a copy: check_alarms may rewrite the list
+  const sched::Skip this_ring{a.id, l->fire_utc};
+  const int64_t lead_s = static_cast<int64_t>(a.lead_minutes) * 60;
+  Ring ring;
+  // Nothing plays before the first set_atten below, so the first sample is already quiet.
+  if (!ring.start(a.sound.c_str())) return false;  // no codec: the alarm still tries on time
+  if (verbose) {
+    print_stamp("lead-in for the ring at", static_cast<time_t>(l->fire_utc));
+    Serial.print(": tap KEY to quiet it, hold KEY 2 s or tap BOOT to skip this ring\r\n");
+  }
+  menu::Button key({kDismissHoldMs, 0, 0});
+  menu::Button boot({0, 0, 0});
+  const uint32_t t0 = millis();
+  if (key_down()) {  // a press already going on (the one that woke the board) is not a gesture
+    key.pressed_since(t0);
+    key.ignore_until_release();
+  }
+  if (boot_down()) {
+    boot.pressed_since(t0);
+    boot.ignore_until_release();
+  }
+  bool quiet = false, skip = false;
+  uint32_t checked = t0;
+  for (;;) {
+    const int64_t left = l->fire_utc - time(nullptr);
+    const int64_t elapsed = left >= lead_s ? 0 : left <= 0 ? lead_s : lead_s - left;
+    ring.set_atten(lead_atten_half_db(static_cast<uint32_t>(elapsed), static_cast<uint32_t>(lead_s),
+                                      a.volume));
+    ring.play(100, 100);  // full-scale samples; the codec sets the loudness
+    const uint32_t ms = millis();
+    const menu::Gesture k = key.update(key_down(), ms);
+    const menu::Gesture b = boot.update(boot_down(), ms);
+    if (k == menu::Gesture::Tap) {
+      quiet = true;
+      break;
+    }
+    if (k == menu::Gesture::Hold || b == menu::Gesture::Press) {
+      skip = true;
+      break;
+    }
+    if (ms - checked >= 1000) {
+      checked = ms;
+      check_alarms();
+      if (g_rtc.ring.state == RingState::Ringing) break;
+      // Past the alarm time without ringing (a clock change), or the alarm
+      // changed: the lead-in has nothing to lead to.
+      const auto now_l =
+          sched::lead_in(g_alarms, g_zone, time(nullptr), g_rtc.skip, g_rtc.lead_quiet);
+      if (!now_l || g_alarms[now_l->index].id != a.id || now_l->fire_utc != l->fire_utc) break;
+      if (current_face() != g_rtc.shown) update_display(false);
+    }
+  }
+  if (g_rtc.ring.state == RingState::Ringing) {
+    if (g_rtc.ring.alarm_id == a.id) {
+      ring_loop(&ring);  // the same sound rings on
+    } else {
+      ring.stop();  // another alarm came due first: its own sound
+      ring_loop();
+    }
+    return true;
+  }
+  ring.stop();
+  if (quiet) g_rtc.lead_quiet = this_ring;
+  if (skip) g_rtc.skip = this_ring;
+  if (verbose) {
+    Serial.print(quiet  ? "lead-in quieted; the alarm still rings on time\r\n"
+                 : skip ? "this ring skipped (BOOT or `alarm skip` undoes it)\r\n"
+                        : "lead-in ended\r\n");
+  }
+  // The press that ended it is no face gesture (menu, skip toggle).
+  while (key_down() || boot_down()) delay(10);
+  delay(menu::kDebounceMs);
+  if (current_face() != g_rtc.shown) update_display(false);
+  return true;
+}
+
 void print_help() {
   Serial.print(
       "\r\ninkwake clock (M3)\r\n"
@@ -1506,7 +1627,7 @@ void print_log() {
   Serial.printf(
       "last %lu of %lu wakes (R rtc, T timer, K key, B boot, P power-on), battery now %u mV\r\n"
       "ntp column: + synced, W no Wi-Fi, D DNS, N no reply, B bad reply, X RTC write failed\r\n"
-      "alarm column: A alarm rang, S snooze ended\r\n",
+      "alarm column: A alarm rang, S snooze ended, L lead-in began\r\n",
       static_cast<unsigned long>(n), static_cast<unsigned long>(g_rtc.log_count), battery_mv());
   for (uint32_t i = g_rtc.log_count - n; i < g_rtc.log_count; ++i) {
     const WakeEntry& e = g_rtc.log[i % kLogLen];
@@ -1794,9 +1915,11 @@ void print_alarms() {
   const int64_t now = time(nullptr);
   if (g_alarms.empty()) Serial.print("no alarms; add one with `alarm add 07:00 weekdays Work`\r\n");
   for (const Alarm& a : g_alarms) {
-    Serial.printf("  %u  %02u:%02u  %-14s %-3s  vol %2u %-6s  %-15s  %s", a.id, a.hour, a.minute,
-                  sched::format_days(a.days).c_str(), a.enabled ? "on" : "off", a.volume,
-                  a.ramp ? "rising" : "steady", a.sound.c_str(), a.label.c_str());
+    char lead[12] = "no lead-in";
+    if (a.lead_minutes != 0) snprintf(lead, sizeof lead, "lead %2u min", a.lead_minutes);
+    Serial.printf("  %u  %02u:%02u  %-14s %-3s  vol %2u %-6s  %-11s  %-15s  %s", a.id, a.hour,
+                  a.minute, sched::format_days(a.days).c_str(), a.enabled ? "on" : "off", a.volume,
+                  a.ramp ? "rising" : "steady", lead, a.sound.c_str(), a.label.c_str());
     if (const auto f = g_rtc.time_set ? sched::next_fire(a, g_zone, now) : std::nullopt) {
       print_stamp("   next", static_cast<time_t>(*f));
     }
@@ -1842,6 +1965,8 @@ void print_alarm_usage() {
       "  alarm volume ID 1-10       loudness (8 = default, 10 = loudest)\r\n"
       "  alarm ramp ID on|off       on: starts quieter and rises to the level; off: steady\r\n"
       "  alarm sound ID NAME        a sound file (`sound` lists them) or default (the beep)\r\n"
+      "  alarm lead ID 0|5|10|15|20 lead-in: the sound starts that many minutes early, fading\r\n"
+      "                             in from near silence (0 = off)\r\n"
       "  alarm beep 1-10            play that level for a few seconds (nothing saved)\r\n"
       "  alarm skip                 skip the next ring, or undo (same as a BOOT tap)\r\n"
       "  alarm test [ID]            ring now, as alarm ID would (tap KEY = snooze, hold 2 s = "
@@ -1927,7 +2052,8 @@ void handle_alarm(const String& line) {
     const auto i = id > 0 && id < 256 ? sched::find(v, static_cast<uint8_t>(id)) : std::nullopt;
     if (!i) {
       if (verb == "on" || verb == "off" || verb == "del" || verb == "time" || verb == "days" ||
-          verb == "label" || verb == "volume" || verb == "ramp" || verb == "sound") {
+          verb == "label" || verb == "volume" || verb == "ramp" || verb == "sound" ||
+          verb == "lead") {
         Serial.print("no alarm with that ID; `alarm` lists them\r\n");
       } else {
         print_alarm_usage();
@@ -1977,6 +2103,13 @@ void handle_alarm(const String& line) {
         return;
       }
       a.ramp = arg == "on";
+    } else if (verb == "lead") {
+      uint8_t minutes = 0;
+      if (!parse_lead(arg.c_str(), minutes)) {
+        Serial.print("lead-in 0 (off), 5, 10, 15 or 20 minutes, e.g. `alarm lead 1 10`\r\n");
+        return;
+      }
+      a.lead_minutes = minutes;
     } else {
       print_alarm_usage();
       return;
@@ -2243,6 +2376,11 @@ void setup() {
       toggle_skip(false);
       for (uint32_t t0 = millis(); digitalRead(kBootPin) == LOW && millis() - t0 < 2000;) delay(10);
     }
+    // Lead-in (#4): the board stays awake while it plays, up to the ring.
+    if (run_lead_in(false)) {
+      WakeEntry& e = g_rtc.log[(g_rtc.log_count - 1) % kLogLen];
+      if (e.alarm == 0) e.alarm = 'L';
+    }
     // After the redraw (and any alarm), so neither waits for Wi-Fi.
     if (ntp_letter == 0) {
       ntp_letter = maybe_ntp_sync();
@@ -2344,6 +2482,7 @@ void loop() {
     }
   }
   if (handle_alarms() != 0) print_alarms();
+  if (run_lead_in(true)) print_alarms();
   // KEY: menu (2 s), Wi-Fi setup (5 s), stop a snooze (2 s), or the date &
   // time editor while the time is not set (tap). Two reads apart: no glitch.
   if (key_down()) {
