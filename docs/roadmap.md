@@ -34,7 +34,7 @@ RTC driver, F12 NTP sync + timezone, Wi-Fi provisioning, F11 room temperature, c
 
 Effort: 4-6 weekends.
 
-F1, F2. Scheduler, snooze state machine, buzzer fallback, alarms saved across reboots.
+F1, button menu (ADR-0018). Scheduler, snooze state machine, buzzer fallback, alarms saved across reboots. F2 touch pads moved to the hardware phase before M7 (they need the shell; KEY snoozes and stops until then).
 
 **Exit gate:** A week of real use on the nightstand with zero missed alarms.
 
@@ -66,7 +66,7 @@ F8, F9. Widget engine, layout config, weather as the first widget, simulator for
 
 Effort: 2-3 weekends.
 
-BOM, build guide, browser flasher, tagged v1.0.
+BOM, build guide, browser flasher, tagged v1.0. Hardware phase first: M0 current test, S1/S2 shell, F2 touch pads (#3).
 
 **Exit gate:** A friend builds one from the docs alone.
 

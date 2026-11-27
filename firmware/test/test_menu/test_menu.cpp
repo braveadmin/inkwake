@@ -69,6 +69,47 @@ static void test_hold_reported_once() {
   TEST_ASSERT_EQUAL_STRING("PH", run(b, true, 0, 6000));
 }
 
+static void test_setup_hold_steps() {
+  TEST_ASSERT_EQUAL(6, menu::kHoldSteps);
+  TEST_ASSERT_EQUAL(-1, menu::setup_hold_steps(0));
+  TEST_ASSERT_EQUAL(-1, menu::setup_hold_steps(menu::kMenuHoldMs - 1));
+  TEST_ASSERT_EQUAL(0, menu::setup_hold_steps(menu::kMenuHoldMs));
+  TEST_ASSERT_EQUAL(0, menu::setup_hold_steps(2'499));
+  TEST_ASSERT_EQUAL(1, menu::setup_hold_steps(2'500));
+  TEST_ASSERT_EQUAL(5, menu::setup_hold_steps(menu::kSetupHoldMs - 1));
+  TEST_ASSERT_EQUAL(6, menu::setup_hold_steps(menu::kSetupHoldMs));
+  TEST_ASSERT_EQUAL(6, menu::setup_hold_steps(60'000));
+}
+
+static void test_hold_screen() {
+  const int n = menu::kHoldSteps;
+  const Rect bar = hold_bar_rect(n);
+  TEST_ASSERT_FALSE(bar.empty());
+  TEST_ASSERT_TRUE(bar.x >= 0 && bar.x + bar.w <= Framebuffer::kWidth);
+  for (int i = 0; i + 1 < n; ++i) {
+    TEST_ASSERT_TRUE(hold_segment_rect(i, n).x + hold_segment_rect(i, n).w <
+                     hold_segment_rect(i + 1, n).x);
+  }
+  TEST_ASSERT_TRUE(hold_segment_rect(n, n).empty());
+  static Framebuffer fb;
+  render_hold(fb, {"Let go: menu", "Keep holding: Wi-Fi setup", 2, n});
+  for (int i = 0; i < n; ++i) {
+    const Rect r = hold_segment_rect(i, n);
+    // Filled segments are black in the middle, the others only outlined.
+    TEST_ASSERT_EQUAL(i < 2, fb.get(r.x + r.w / 2, r.y + r.h / 2));
+    TEST_ASSERT_TRUE(fb.get(r.x, r.y));
+  }
+  // Title and hint sit outside the bar, so a step only redraws the bar.
+  bool text_above = false, text_below = false;
+  for (int y = 0; y < bar.y; ++y)
+    for (int x = 0; x < Framebuffer::kWidth && !text_above; ++x)
+      text_above = y > 20 && fb.get(x, y);
+  for (int y = bar.y + bar.h; y < Framebuffer::kHeight; ++y)
+    for (int x = 0; x < Framebuffer::kWidth && !text_below; ++x) text_below = fb.get(x, y);
+  TEST_ASSERT_TRUE(text_above);
+  TEST_ASSERT_TRUE(text_below);
+}
+
 static void test_repeat() {
   Button b(kBoot);
   // Press at 0 (seen at 30 after the debounce), repeats at 500, 650, 800, 950.
@@ -863,6 +904,8 @@ int main() {
   RUN_TEST(test_hold_then_release);
   RUN_TEST(test_hold_reported_once);
   RUN_TEST(test_repeat);
+  RUN_TEST(test_setup_hold_steps);
+  RUN_TEST(test_hold_screen);
   RUN_TEST(test_repeat_does_not_burst_after_a_stall);
   RUN_TEST(test_pressed_since_wake);
   RUN_TEST(test_pressed_since_then_quick_release_is_tap);

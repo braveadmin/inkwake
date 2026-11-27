@@ -16,6 +16,15 @@ constexpr uint32_t kRepeatDelayMs = 500;  // BOOT held: first repeat
 constexpr uint32_t kRepeatMs = 150;       // BOOT held: then every
 constexpr uint32_t kIdleMs = 60'000;      // menu closes without saving
 
+// Progress towards Wi-Fi setup while KEY is held (#59): segments fill from
+// kMenuHoldMs to kSetupHoldMs, one every kHoldStepMs.
+constexpr uint32_t kHoldStepMs = 500;
+constexpr int kHoldSteps = static_cast<int>((kSetupHoldMs - kMenuHoldMs) / kHoldStepMs);
+
+// Segments filled after KEY has been held `held_ms`: -1 before kMenuHoldMs
+// (nothing shown yet), then 0 .. kHoldSteps (full = Wi-Fi setup reached).
+int setup_hold_steps(uint32_t held_ms);
+
 enum class Gesture : uint8_t {
   None,
   Press,    // went down (debounced)

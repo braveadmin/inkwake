@@ -9,7 +9,9 @@
 // date & time editor with field 0-4, Save (5) or Cancel (6) marked), alarms (#55: list),
 // alarm (one alarm), delete (its confirmation), add (new alarm) or alarm0 .. alarm13 (the
 // editor on a custom-days alarm with field 0-9, volume (10), ramp (11), Save (12) or
-// Cancel (13) marked).
+// Cancel (13) marked). --hold N draws the screen of KEY held towards Wi-Fi setup
+// (#59) with N of its segments filled (0 .. 6; 6 = setup reached), --hold-first N the
+// same on the first-start screens.
 //
 //   gcc -c lib/qrcodegen/src/qrcodegen.c -o qrcodegen.o
 //   g++ -std=c++17 -Ilib/display/src -Ilib/qrcodegen/src -Ilib/menu/src -Ilib/tz/src
@@ -128,7 +130,7 @@ int main(int argc, char** argv) {
                  "usage: %s out.pbm [h m weekday day month temp_dc] [--regions] [--wifi] "
                  "[--low|--critical] [--alarm HH:MM [--snoozed|--skipped] [--wd N]] "
                  "[--setup|--ringing|--menu "
-                 "SCREEN]\n",
+                 "SCREEN|--hold N|--hold-first N]\n",
                  argv[0]);
     return 2;
   }
@@ -143,6 +145,8 @@ int main(int argc, char** argv) {
   }
   bool regions = false, setup = false, ringing = false;
   const char* menu_screen = nullptr;
+  int hold = -1;
+  const char* hold_release = "Let go: menu";
   for (int i = 2; i < argc; ++i) {
     regions = regions || std::strcmp(argv[i], "--regions") == 0;
     setup = setup || std::strcmp(argv[i], "--setup") == 0;
@@ -151,6 +155,10 @@ int main(int argc, char** argv) {
     if (std::strcmp(argv[i], "--critical") == 0) s.battery = 2;
     ringing = ringing || std::strcmp(argv[i], "--ringing") == 0;
     if (std::strcmp(argv[i], "--menu") == 0 && i + 1 < argc) menu_screen = argv[i + 1];
+    if (std::strncmp(argv[i], "--hold", 6) == 0 && i + 1 < argc) {
+      hold = std::atoi(argv[i + 1]);
+      if (std::strcmp(argv[i], "--hold-first") == 0) hold_release = "Let go: back";
+    }
     if (std::strcmp(argv[i], "--alarm") == 0 && i + 1 < argc) {
       int h = 0, m = 0;
       std::sscanf(argv[i + 1], "%d:%d", &h, &m);
@@ -171,6 +179,13 @@ int main(int argc, char** argv) {
     qrcodegen_encodeText("WIFI:T:nopass;S:inkwake-A10B;;", tmp, qr, qrcodegen_Ecc_LOW, 1, 40,
                          qrcodegen_Mask_AUTO, true);
     render_setup(fb, qr, "inkwake-A10B");
+    regions = false;
+  } else if (hold >= 0) {
+    // As main.cpp's show_hold_progress.
+    const bool full = hold >= menu::kHoldSteps;
+    render_hold(fb,
+                {full ? "Wi-Fi setup" : hold_release,
+                 full ? "Let go to start" : "Keep holding: Wi-Fi setup", hold, menu::kHoldSteps});
     regions = false;
   } else if (menu_screen != nullptr) {
     draw_menu(fb, menu_screen);

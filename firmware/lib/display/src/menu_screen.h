@@ -95,4 +95,23 @@ Rect alarm_field_rect(const AlarmEditView& v, int field);
 // Screen area of the Save or Cancel button in both editors. For tests.
 Rect editor_button_rect(int button);
 
+// KEY held towards Wi-Fi setup (#59): what letting go does now, a row of
+// `total` segments with `steps` of them filled, and a hint under it.
+struct HoldView {
+  const char* title;  // e.g. "Let go: menu", or "Wi-Fi setup" once full
+  const char* hint;   // e.g. "Keep holding: Wi-Fi setup"; nullptr = none
+  int steps;          // 0 .. total
+  int total;
+};
+
+// Clears the framebuffer and draws the hold screen, with an arrow at KEY.
+void render_hold(Framebuffer& fb, const HoldView& v);
+
+// Screen area of the segment row in render_hold: all that changes from one
+// step to the next while title and hint stay. For partial refresh and tests.
+Rect hold_bar_rect(int total);
+
+// Screen area of segment `i` (0-based) in render_hold. For tests.
+Rect hold_segment_rect(int i, int total);
+
 }  // namespace inkwake
