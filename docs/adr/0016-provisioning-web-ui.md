@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-20
+- Amended 2026-11-27 (#44): sound files are uploaded from the setup page now (`POST /api/sounds/upload`, raw body, streamed to LittleFS), listed and deleted there; these handlers run on the server's task.
 - Amended by ADR-0018 (2026-11-25): Wi-Fi is optional (Advanced mode); first boot opens the date & time editor instead of setup (#34). KEY held 5 s still opens setup, also from the button menu.
 
 ## Context

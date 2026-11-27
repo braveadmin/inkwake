@@ -47,7 +47,12 @@ button.secondary{background:none;color:var(--ink);border:1px solid var(--line);m
 .days label:has(input:checked){background:var(--accent);color:var(--bg)}
 .pair{display:flex;gap:8px}
 .pair button{margin-top:16px}
-#alarmStatus{min-height:1.4em;margin-top:8px}
+#alarmStatus,#soundStatus{min-height:1.4em;margin-top:8px}
+.snd{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.snd .d{flex:1;min-width:0;overflow-wrap:anywhere}
+.snd .sub{color:var(--muted);font-size:.85rem}
+.snd button{width:auto;margin:0;padding:6px 10px}
+code{font-size:.8rem;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -96,6 +101,8 @@ button.secondary{background:none;color:var(--ink);border:1px solid var(--line);m
     <div class="days" id="aDays"></div>
     <label for="aLabel">Label</label>
     <input id="aLabel" maxlength="23" autocomplete="off" placeholder="Work">
+    <label for="aSound">Sound</label>
+    <select id="aSound"></select>
     <label for="aVol">Volume (1 quietest, 10 loudest)</label>
     <div class="pair" style="align-items:center">
       <select id="aVol" style="flex:1"></select>
@@ -111,6 +118,17 @@ button.secondary{background:none;color:var(--ink);border:1px solid var(--line);m
   </div>
   <div id="alarmStatus"></div>
   <p class="hint">On the clock: tap KEY to snooze 9 minutes, hold it 2 seconds to stop.</p>
+</section>
+
+<section id="sounds">
+  <h2>Sounds</h2>
+  <div id="soundList"><p class="hint">Loading...</p></div>
+  <label for="sFile">Add a sound (WAV)</label>
+  <input id="sFile" type="file" accept=".wav,audio/wav,audio/x-wav">
+  <button id="sUpload" type="button">Upload</button>
+  <div id="soundStatus"></div>
+  <p class="hint" id="soundUse"></p>
+  <p class="hint">WAV, 16-bit, mono, 16 to 48 kHz. One file can take almost all of the sound storage (about 3 MB: 70 s at 22 kHz, 35 s at 44.1 kHz); the line above shows the exact limit. The clock loops it while the alarm rings and beeps instead if the file is missing. To convert in Audacity: Tracks &gt; Mix &gt; Mix Stereo Down to Mono, then File &gt; Export &gt; Export as WAV, 16-bit PCM. With ffmpeg: <code>ffmpeg -i in.mp3 -ac 1 -ar 22050 -sample_fmt s16 out.wav</code></p>
 </section>
 </main>
 
@@ -375,7 +393,7 @@ function showAlarms() {
     const l2 = document.createElement("div");
     l2.className = "sub";
     l2.textContent = daysText(a) + (a.on && a.next ? " \u00b7 next " + a.next : a.on ? "" : " \u00b7 off") +
-                     " \u00b7 volume " + a.volume;
+                     " \u00b7 volume " + a.volume + (a.sound && a.sound !== "default" ? " \u00b7 " + soundText(a.sound) : "");
     d.append(l1, l2);
     const tog = document.createElement("button");
     tog.type = "button";
@@ -399,6 +417,7 @@ function openEditor(a) {
   $("aOn").checked = a ? a.on : true;
   $("aVol").value = String(a ? a.volume : 8);
   $("aRamp").checked = a ? a.ramp : true;
+  fillSoundSelect(a ? a.sound : "default");
   const mask = a ? a.mask : 31;
   document.querySelectorAll("#aDays input").forEach((cb, i) => { cb.checked = !!(mask & (1 << i)); });
   $("aDel").classList.toggle("hidden", !a);
@@ -447,15 +466,16 @@ async function saveAlarm() {
   const picked = DAYS.filter((d, i) => document.querySelectorAll("#aDays input")[i].checked);
   const form = {op: editing ? "save" : "add", time: time, days: picked.length ? picked.join(",") : "once",
                 label: $("aLabel").value.trim(), on: $("aOn").checked ? "1" : "0",
-                volume: $("aVol").value, ramp: $("aRamp").checked ? "1" : "0"};
+                volume: $("aVol").value, ramp: $("aRamp").checked ? "1" : "0", sound: $("aSound").value};
   if (editing) form.id = editing.id;
   if (await sendAlarm(form)) closeEditor();
 }
 
-// Plays the chosen volume on the clock for a few seconds; nothing is saved.
+// Plays the chosen sound and volume on the clock for a few seconds; nothing is saved.
 async function testVolume() {
   $("aTest").disabled = true;
-  await sendAlarm({op: "test", volume: $("aVol").value}, "Playing on the clock...", "Played. Not saved yet.");
+  await sendAlarm({op: "test", volume: $("aVol").value, sound: $("aSound").value},
+                  "Playing on the clock...", "Played. Not saved yet.");
   $("aTest").disabled = false;
 }
 
@@ -482,6 +502,132 @@ function initAlarms() {
   loadAlarms().catch(e => { $("alarmList").innerHTML = ""; alarmStatus("Could not load alarms: " + e.message, "bad"); });
 }
 
+// ---- Sounds (#44) ----
+let sounds = [], soundInfo = {};
+
+function soundText(name) {
+  if (name === "default") return "Beep";
+  if (!soundInfo.ready) return name;  // list not loaded (yet)
+  return sounds.some(s => s.name === name) ? name : name + " (missing: beeps)";
+}
+
+function fillSoundSelect(current) {
+  const sel = $("aSound");
+  sel.innerHTML = "";
+  sel.add(new Option("Beep (built in)", "default"));
+  for (const s of sounds) if (!s.error) sel.add(new Option(s.name + " (" + s.seconds + " s)", s.name));
+  if (current && current !== "default" && !sounds.some(s => s.name === current && !s.error)) {
+    sel.add(new Option(current + " (missing: beeps)", current));
+  }
+  sel.value = current || "default";
+}
+
+function soundStatus(text, cls) {
+  const s = $("soundStatus");
+  s.textContent = text;
+  s.className = cls || "";
+}
+
+function kb(bytes) { return Math.round(bytes / 1024) + " KB"; }
+
+function showSounds() {
+  const box = $("soundList");
+  box.innerHTML = "";
+  if (!sounds.length) box.innerHTML = '<p class="hint">No sounds yet: alarms beep.</p>';
+  for (const s of sounds) {
+    const row = document.createElement("div");
+    row.className = "snd";
+    const d = document.createElement("div");
+    d.className = "d";
+    const l1 = document.createElement("div");
+    l1.textContent = s.name;
+    const l2 = document.createElement("div");
+    l2.className = "sub";
+    const users = alarms.filter(a => a.sound === s.name).map(a => a.time);
+    l2.textContent = (s.error ? "Unusable: " + s.error : s.seconds + " s \u00b7 " + (s.rate / 1000) + " kHz") +
+                     " \u00b7 " + kb(s.bytes) + (users.length ? " \u00b7 alarm " + users.join(", ") : "");
+    d.append(l1, l2);
+    row.append(d);
+    if (!s.error) {
+      const play = document.createElement("button");
+      play.type = "button";
+      play.className = "link";
+      play.textContent = "Play";
+      play.onclick = async () => {
+        play.disabled = true;
+        await sendAlarm({op: "test", volume: "8", sound: s.name}, "Playing on the clock...", "Played.");
+        play.disabled = false;
+      };
+      row.append(play);
+    }
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "link";
+    del.textContent = "Delete";
+    del.onclick = async () => {
+      // Asks with a second tap: captive-portal browsers may not show confirm().
+      if (del.textContent !== "Sure? Tap again") {
+        del.textContent = "Sure? Tap again";
+        setTimeout(() => { del.textContent = "Delete"; }, 4000);
+        return;
+      }
+      try {
+        await api("/api/sounds", {op: "del", name: s.name});
+        soundStatus("Deleted " + s.name + (users.length ? ". Alarms that used it beep now." : "."), "ok");
+        await loadSounds();
+      } catch (e) {
+        soundStatus(e.message, "bad");
+      }
+    };
+    row.append(del);
+    box.append(row);
+  }
+  const i = soundInfo;
+  $("soundUse").textContent = i.ready ? kb(i.used) + " of " + kb(i.total) + " used. Largest file: " + kb(i.max_file) +
+                                        ", if nothing else is stored." : "Sound storage is not ready.";
+  if (!$("editor").classList.contains("hidden")) fillSoundSelect($("aSound").value);
+}
+
+async function loadSounds() {
+  soundInfo = await api("/api/sounds");
+  sounds = soundInfo.sounds || [];
+  showSounds();
+  showAlarms();
+}
+
+// Streams the file as the request body; XMLHttpRequest for the progress.
+function upload() {
+  const f = $("sFile").files[0];
+  if (!f) { soundStatus("Pick a WAV file first.", "bad"); return; }
+  if (!/\.wav$/i.test(f.name)) { soundStatus("Only WAV files: convert it first (see below).", "bad"); return; }
+  const max = soundInfo.max_file || 3276800;
+  if (f.size > max) { soundStatus("Too big: " + kb(f.size) + ", at most " + kb(max) + ".", "bad"); return; }
+  $("sUpload").disabled = true;
+  const x = new XMLHttpRequest();
+  x.open("POST", "/api/sounds/upload?file=" + encodeURIComponent(f.name));
+  x.setRequestHeader("Content-Type", "application/octet-stream");
+  x.upload.onprogress = e => { if (e.lengthComputable) soundStatus("Uploading... " + Math.round(100 * e.loaded / e.total) + " %"); };
+  x.onload = async () => {
+    let body = {};
+    try { body = JSON.parse(x.responseText); } catch (e) { /* keep empty */ }
+    if (x.status === 200) {
+      soundStatus("Added " + body.name + ". Pick it in an alarm's Sound.", "ok");
+      $("sFile").value = "";
+    } else {
+      soundStatus(body.error || ("HTTP " + x.status), "bad");
+    }
+    $("sUpload").disabled = false;
+    await loadSounds().catch(() => {});
+  };
+  x.onerror = () => { soundStatus("Upload failed: no answer from the clock.", "bad"); $("sUpload").disabled = false; };
+  x.send(f);
+}
+
+function initSounds() {
+  $("sUpload").onclick = upload;
+  loadSounds().catch(e => { $("soundList").innerHTML = ""; soundStatus("Could not load sounds: " + e.message, "bad"); });
+}
+
 async function init() {
   $("show").onchange = () => { $("pass").type = $("show").checked ? "text" : "password"; };
   $("zone").onchange = zoneChanged;
@@ -496,6 +642,7 @@ async function init() {
   showSaved(settings.networks || []);
   fillZones(settings.tz);
   initAlarms();
+  initSounds();
   scan(false);
 }
 init();

@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <esp_http_server.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,8 @@
 #include <string>
 
 #include "provision.h"
+#include "sound.h"
+#include "sound_files.h"
 #include "tz.h"
 #include "web_page.h"
 
@@ -25,7 +28,7 @@ constexpr uint32_t kConnectTimeoutMs = 15'000;
 constexpr uint32_t kLingerMs = 6'000;  // after success, so the page can read the result
 constexpr size_t kMaxNets = 20;
 constexpr size_t kBodyMax = 512;
-constexpr size_t kAlarmsJsonMax = 4096;
+constexpr size_t kAlarmsJsonMax = 6144;  // 16 alarms with escaped labels and sounds
 constexpr size_t kTzLen = 64;
 constexpr size_t kSsidLen = provision::kSsidMax + 1;
 constexpr size_t kPassLen = provision::kPassMax + 1;
@@ -322,6 +325,84 @@ esp_err_t handle_post_alarms(httpd_req_t* req) {
   return send_json(req, "202 Accepted", buf);
 }
 
+// ---- Sound files (#44) ----
+// These run on the server's task: an upload has to be streamed as it comes.
+// sound_files keeps them apart from the main task's playing (see there).
+
+esp_err_t handle_get_sounds(httpd_req_t* req) {
+  touch();
+  static sound_files::Info list[sound::kMaxFiles];
+  static char buf[sound::kMaxFiles * 128 + 192];
+  const size_t n = sound_files::list(list, sound::kMaxFiles);
+  uint32_t used = 0, total = 0;
+  const bool ready = sound_files::usage(used, total);
+  size_t o = static_cast<size_t>(
+      snprintf(buf, sizeof buf, "{\"ready\":%s,\"sounds\":[", ready ? "true" : "false"));
+  for (size_t i = 0; i < n; ++i) {
+    const sound_files::Info& f = list[i];
+    const bool ok = f.err == sound::WavError::None;
+    o += static_cast<size_t>(snprintf(
+        buf + o, sizeof buf - o,
+        "%s{\"name\":\"%s\",\"bytes\":%lu,\"seconds\":%lu,\"rate\":%lu,\"error\":\"%s\"}",
+        i ? "," : "", f.name, static_cast<unsigned long>(f.bytes),
+        static_cast<unsigned long>(ok ? sound::seconds(f.wav) : 0),
+        static_cast<unsigned long>(ok ? f.wav.rate : 0), ok ? "" : sound::wav_error_text(f.err)));
+  }
+  snprintf(buf + o, sizeof buf - o, "],\"used\":%lu,\"total\":%lu,\"max_file\":%lu,\"max\":%u}",
+           static_cast<unsigned long>(used), static_cast<unsigned long>(total),
+           static_cast<unsigned long>(sound_files::max_file()),
+           static_cast<unsigned>(sound::kMaxFiles));
+  return send_json(req, "200 OK", buf);
+}
+
+// form: op=del, name
+esp_err_t handle_post_sounds(httpd_req_t* req) {
+  touch();
+  char body[kBodyMax];
+  if (!read_body(req, body, sizeof body)) return ESP_OK;
+  char op[8] = "", name[sound::kMaxName + 1] = "";
+  provision::form_value(body, "op", op, sizeof op);
+  provision::form_value(body, "name", name, sizeof name);
+  if (strcmp(op, "del") != 0) return send_error(req, "400 Bad Request", "op: del");
+  if (const char* why = sound_files::remove(name)) return send_error(req, "400 Bad Request", why);
+  return send_json(req, "200 OK", "{\"ok\":true}");
+}
+
+// POST /api/sounds/upload?file=NAME.wav, body = the file itself. The sound
+// name comes from the file name (sound::name_from_upload).
+esp_err_t handle_upload(httpd_req_t* req) {
+  touch();
+  char query[160] = "", file[128] = "", name[sound::kMaxName + 1];
+  httpd_req_get_url_query_str(req, query, sizeof query);
+  provision::form_value(query, "file", file, sizeof file);
+  if (!sound::name_from_upload(file, name, sizeof name)) {
+    return send_error(req, "400 Bad Request", "file name: use letters and digits");
+  }
+  if (const char* why = sound_files::upload_begin(name, static_cast<uint32_t>(req->content_len))) {
+    return send_error(req, "400 Bad Request", why);
+  }
+  static uint8_t chunk[4096];
+  size_t got = 0;
+  bool ok = true;
+  int timeouts = 0;  // a phone that went away mid-upload: give up after ~15 s
+  while (ok && got < req->content_len) {
+    const size_t want = std::min(sizeof chunk, req->content_len - got);
+    const int r = httpd_req_recv(req, reinterpret_cast<char*>(chunk), want);
+    if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3) continue;
+    if (r <= 0) {
+      ok = false;
+      break;
+    }
+    ok = sound_files::upload_write(chunk, static_cast<size_t>(r));
+    got += static_cast<size_t>(r);
+    touch();
+  }
+  if (const char* why = sound_files::upload_end(ok)) return send_error(req, "400 Bad Request", why);
+  char buf[64];
+  snprintf(buf, sizeof buf, "{\"ok\":true,\"name\":\"%s\"}", name);
+  return send_json(req, "200 OK", buf);
+}
+
 esp_err_t handle_redirect(httpd_req_t* req) {
   httpd_resp_set_status(req, "302 Found");
   httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
@@ -331,7 +412,7 @@ esp_err_t handle_redirect(httpd_req_t* req) {
 
 httpd_handle_t start_server() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-  cfg.max_uri_handlers = 12;
+  cfg.max_uri_handlers = 16;
   cfg.lru_purge_enable = true;  // phones open many sockets; drop the oldest
   cfg.max_open_sockets = 7;
   cfg.stack_size = 8192;
@@ -349,6 +430,9 @@ httpd_handle_t start_server() {
       {"/api/close", HTTP_POST, handle_close, nullptr},
       {"/api/alarms", HTTP_GET, handle_get_alarms, nullptr},
       {"/api/alarms", HTTP_POST, handle_post_alarms, nullptr},
+      {"/api/sounds", HTTP_GET, handle_get_sounds, nullptr},
+      {"/api/sounds", HTTP_POST, handle_post_sounds, nullptr},
+      {"/api/sounds/upload", HTTP_POST, handle_upload, nullptr},
       {"/*", HTTP_GET, handle_redirect, nullptr},  // last: wildcard
   };
   for (const httpd_uri_t& u : uris) httpd_register_uri_handler(server, &u);
