@@ -350,7 +350,7 @@ esp_err_t handle_get_sounds(httpd_req_t* req) {
   }
   snprintf(buf + o, sizeof buf - o, "],\"used\":%lu,\"total\":%lu,\"max_file\":%lu,\"max\":%u}",
            static_cast<unsigned long>(used), static_cast<unsigned long>(total),
-           static_cast<unsigned long>(sound::kMaxFileBytes),
+           static_cast<unsigned long>(sound_files::max_file()),
            static_cast<unsigned>(sound::kMaxFiles));
   return send_json(req, "200 OK", buf);
 }

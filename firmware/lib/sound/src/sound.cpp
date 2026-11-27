@@ -163,6 +163,12 @@ WavError parse_wav(ReadFn read, void* ctx, uint32_t file_size, Wav& out) {
   return have_fmt ? WavError::NoData : WavError::NoFormat;
 }
 
+uint32_t max_file_bytes(uint32_t total_bytes) {
+  if (total_bytes <= kReserveBytes) return 0;
+  const uint32_t room = total_bytes - kReserveBytes;
+  return room < kMaxFileBytes ? room : kMaxFileBytes;
+}
+
 uint32_t seconds(const Wav& w) { return w.rate ? w.data_bytes / 2 / w.rate : 0; }
 
 Span loop_next(Loop& loop, const Wav& w, uint32_t want) {

@@ -12,7 +12,7 @@ On-board ES8311 codec and amplifier (I2S on GPIO8/9/10/16/45; PA_CTRL on GPIO46 
 
 - **Storage:** sound files go on the LittleFS partition in flash (`spiffs` in default_16MB.csv, about 3.3 MB), not the TF card. No card to buy, nothing to open, no card current in deep sleep, and files are uploaded from the setup page. The firmware formats the partition itself the first time setup opens (or `sound` runs), so there is no littlefs.bin to flash; Erase Flash wipes the sounds. The TF card can come back later if 3.3 MB proves too small.
 - **Format:** WAV, 16-bit PCM, mono, 16-48 kHz only; anything else is refused on upload with a reason. No decoder: least CPU and battery while ringing. The I2S rate follows the file; the ES8311 registers stay the same, since MCLK is always 256 x fs.
-- **Limits:** 1.5 MB per file, 20 files, 64 KB kept free.
+- **Limits:** 256 KB of the partition stay free for the settings file (ADR-0005) and widget caches (F8-F10); one file may use all the rest (about 3.1 MB, user's choice: one big sound is fine, and shrinking the code for a bigger partition is later work). 20 files at most.
 - **No built-in sounds** besides the beep: the flash stays free for the user's own files, and no licence checks.
 - **Volume:** a file plays with the alarm's own level and rising/steady setting (#43), scaled in software on the beep's -40..0 dBFS scale. The longer ambient lead-in stays with #4.
 - **Fallback:** any trouble with the file (missing, bad format, storage not ready, a read failing mid-play) rings the beep instead; an alarm never stays silent because of a sound file.

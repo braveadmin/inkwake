@@ -17,7 +17,7 @@ One setting per alarm: the light ramps up over 20-30 min, ambient sound fades in
 
 Each alarm plays the built-in beep (`default`) or one of your own files, looped, with the alarm's volume level and rising/steady setting.
 
-- **Format:** WAV, 16-bit PCM, mono, 16 to 48 kHz. Up to 1.5 MB per file (about 35 s at 22.05 kHz, 50 s at 16 kHz), 20 files, about 3.3 MB in all. Anything else is refused on upload, with the reason.
+- **Format:** WAV, 16-bit PCM, mono, 16 to 48 kHz. One file can fill the whole sound storage except 256 KB kept for settings and widgets: about 3.1 MB (about 100 s at 16 kHz, 70 s at 22.05 kHz, 35 s at 44.1 kHz). Several files share that space, 20 files at most; the Sounds section shows the exact limit and what is used. Anything else is refused on upload, with the reason.
 - **Convert:** Audacity: Tracks > Mix > Mix Stereo Down to Mono, Tracks > Resample (22050 Hz), File > Export > Export as WAV, "Signed 16-bit PCM". Or ffmpeg: `ffmpeg -i in.mp3 -ac 1 -ar 22050 -sample_fmt s16 out.wav`.
 - **Names:** the file name becomes the sound's name: lowercased, spaces and dots become `-`, other characters dropped, at most 15 characters ("Morning Birds.wav" -> `morning-birds`). Uploading the same name again replaces the file.
 - **Upload:** open setup (KEY held 5 s, or `setup` on the serial console), join the inkwake network, and use the Sounds section: pick a file, Upload. The first time setup opens after this firmware, the clock prepares the storage (screen "Preparing sound storage", can take up to a minute, once).

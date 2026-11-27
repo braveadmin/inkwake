@@ -128,7 +128,7 @@ code{font-size:.8rem;overflow-wrap:anywhere}
   <button id="sUpload" type="button">Upload</button>
   <div id="soundStatus"></div>
   <p class="hint" id="soundUse"></p>
-  <p class="hint">WAV, 16-bit, mono, 16 to 48 kHz, up to 1.5 MB (about 35 s at 22 kHz). The clock loops it while the alarm rings and beeps instead if the file is missing. To convert in Audacity: Tracks &gt; Mix &gt; Mix Stereo Down to Mono, then File &gt; Export &gt; Export as WAV, 16-bit PCM. With ffmpeg: <code>ffmpeg -i in.mp3 -ac 1 -ar 22050 -sample_fmt s16 out.wav</code></p>
+  <p class="hint">WAV, 16-bit, mono, 16 to 48 kHz. One file can take almost all of the sound storage (about 3 MB: 70 s at 22 kHz, 35 s at 44.1 kHz); the line above shows the exact limit. The clock loops it while the alarm rings and beeps instead if the file is missing. To convert in Audacity: Tracks &gt; Mix &gt; Mix Stereo Down to Mono, then File &gt; Export &gt; Export as WAV, 16-bit PCM. With ffmpeg: <code>ffmpeg -i in.mp3 -ac 1 -ar 22050 -sample_fmt s16 out.wav</code></p>
 </section>
 </main>
 
@@ -583,7 +583,8 @@ function showSounds() {
     box.append(row);
   }
   const i = soundInfo;
-  $("soundUse").textContent = i.ready ? kb(i.used) + " of " + kb(i.total) + " used." : "Sound storage is not ready.";
+  $("soundUse").textContent = i.ready ? kb(i.used) + " of " + kb(i.total) + " used. Largest file: " + kb(i.max_file) +
+                                        ", if nothing else is stored." : "Sound storage is not ready.";
   if (!$("editor").classList.contains("hidden")) fillSoundSelect($("aSound").value);
 }
 
@@ -599,7 +600,7 @@ function upload() {
   const f = $("sFile").files[0];
   if (!f) { soundStatus("Pick a WAV file first.", "bad"); return; }
   if (!/\.wav$/i.test(f.name)) { soundStatus("Only WAV files: convert it first (see below).", "bad"); return; }
-  const max = soundInfo.max_file || 1572864;
+  const max = soundInfo.max_file || 3276800;
   if (f.size > max) { soundStatus("Too big: " + kb(f.size) + ", at most " + kb(max) + ".", "bad"); return; }
   $("sUpload").disabled = true;
   const x = new XMLHttpRequest();

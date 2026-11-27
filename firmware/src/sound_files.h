@@ -24,6 +24,9 @@ bool mount(bool format);
 bool mounted();
 // Bytes used and total on the partition. False if not mounted.
 bool usage(uint32_t& used, uint32_t& total);
+// Largest file an upload may have (sound::max_file_bytes of this filesystem),
+// whatever is stored now. kMaxFileBytes while not mounted.
+uint32_t max_file();
 
 struct Info {
   char name[sound::kMaxName + 1];

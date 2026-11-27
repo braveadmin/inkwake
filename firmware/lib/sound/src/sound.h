@@ -21,10 +21,18 @@ constexpr size_t kMaxPath = sizeof kDir + kMaxName + sizeof kExt;  // "/sounds/"
 
 constexpr uint32_t kMinRate = 16000;
 constexpr uint32_t kMaxRate = 48000;
-constexpr uint32_t kMaxFileBytes = 1536 * 1024;  // per file; the partition holds about 3.3 MB
+// The data partition in default_16MB.csv (0x360000 = 3.375 MiB). A single file
+// may fill all of it but kReserveBytes (decided 2026-11-27: one big sound is
+// fine; shrinking the code for more room is later work).
+constexpr uint32_t kPartitionBytes = 0x360000;
+// Kept free for the settings file (ADR-0005) and widget caches (F8-F10).
+constexpr uint32_t kReserveBytes = 256 * 1024;
+constexpr uint32_t kMaxFileBytes = kPartitionBytes - kReserveBytes;  // upper bound
 constexpr size_t kMaxFiles = 20;
-// Space kept free after an upload, for LittleFS metadata.
-constexpr uint32_t kReserveBytes = 64 * 1024;
+
+// Largest upload on a filesystem of `total_bytes` (LittleFS reports a bit less
+// than the partition): all of it but kReserveBytes, at most kMaxFileBytes.
+uint32_t max_file_bytes(uint32_t total_bytes);
 
 // A file sound name: 1-15 of a-z, 0-9, '-', '_', not kDefault.
 bool name_valid(const char* name);

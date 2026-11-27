@@ -242,6 +242,15 @@ void test_seconds() {
   TEST_ASSERT_EQUAL_UINT32(0, seconds({0, 44, 100}));
 }
 
+void test_max_file_bytes() {
+  TEST_ASSERT_EQUAL_UINT32(kPartitionBytes - kReserveBytes, kMaxFileBytes);
+  TEST_ASSERT_EQUAL_UINT32(kMaxFileBytes, max_file_bytes(kPartitionBytes));
+  TEST_ASSERT_EQUAL_UINT32(kMaxFileBytes, max_file_bytes(kPartitionBytes * 2));
+  TEST_ASSERT_EQUAL_UINT32(3'000'000 - kReserveBytes, max_file_bytes(3'000'000));
+  TEST_ASSERT_EQUAL_UINT32(0, max_file_bytes(kReserveBytes));
+  TEST_ASSERT_EQUAL_UINT32(0, max_file_bytes(0));
+}
+
 // ---- loop ----
 
 void test_loop_wraps_without_gap() {
@@ -314,6 +323,7 @@ int main() {
   RUN_TEST(test_wav_refused);
   RUN_TEST(test_wav_data_cut_to_file);
   RUN_TEST(test_seconds);
+  RUN_TEST(test_max_file_bytes);
   RUN_TEST(test_loop_wraps_without_gap);
   RUN_TEST(test_loop_odd_and_bad_input);
   RUN_TEST(test_gain);

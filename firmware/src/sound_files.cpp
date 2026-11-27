@@ -60,6 +60,11 @@ bool usage(uint32_t& used, uint32_t& total) {
   return true;
 }
 
+uint32_t max_file() {
+  uint32_t used = 0, total = 0;
+  return usage(used, total) ? sound::max_file_bytes(total) : sound::kMaxFileBytes;
+}
+
 size_t list(Info* out, size_t max) {
   if (!g_mounted) return 0;
   File dir = LittleFS.open(sound::kDir);
@@ -104,9 +109,14 @@ const char* remove(const char* name) {
 
 const char* upload_begin(const char* name, uint32_t size) {
   if (!sound::name_valid(name)) return "name: 1-15 of a-z, 0-9, - and _";
-  if (size > sound::kMaxFileBytes) return "file too big: 1.5 MB at most";
   if (size < 46) return "file too short for a WAV";
   if (!g_mounted) return "sound storage not ready";
+  if (size > max_file()) {
+    static char msg[48];
+    snprintf(msg, sizeof msg, "file too big: %lu KB at most",
+             static_cast<unsigned long>(max_file() / 1024));
+    return msg;
+  }
   bool expected = false;
   if (!g_uploading.compare_exchange_strong(expected, true)) return "another upload is running";
   char path[sound::kMaxPath];
