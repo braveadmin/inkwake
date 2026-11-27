@@ -109,6 +109,14 @@ code{font-size:.8rem;overflow-wrap:anywhere}
       <button id="aTest" type="button" class="link" style="width:auto;margin-top:0">Test</button>
     </div>
     <label style="display:flex;gap:8px;align-items:center"><input id="aRamp" type="checkbox" style="width:auto" checked> Rising: starts quieter, gets louder up to the volume</label>
+    <label for="aLead">Lead-in: the sound starts early, fading in from near silence</label>
+    <select id="aLead">
+      <option value="0">Off</option>
+      <option value="5">5 minutes before</option>
+      <option value="10">10 minutes before</option>
+      <option value="15">15 minutes before</option>
+      <option value="20">20 minutes before</option>
+    </select>
     <label style="display:flex;gap:8px;align-items:center"><input id="aOn" type="checkbox" style="width:auto" checked> On</label>
     <div class="pair">
       <button id="aSave" type="button">Save alarm</button>
@@ -117,7 +125,7 @@ code{font-size:.8rem;overflow-wrap:anywhere}
     </div>
   </div>
   <div id="alarmStatus"></div>
-  <p class="hint">On the clock: tap KEY to snooze 9 minutes, hold it 2 seconds to stop.</p>
+  <p class="hint">On the clock: tap KEY to snooze 9 minutes, hold it 2 seconds to stop. During a lead-in, tap KEY to quiet it (the alarm still rings), or hold it 2 seconds to skip that ring.</p>
 </section>
 
 <section id="sounds">
@@ -393,7 +401,7 @@ function showAlarms() {
     const l2 = document.createElement("div");
     l2.className = "sub";
     l2.textContent = daysText(a) + (a.on && a.next ? " \u00b7 next " + a.next : a.on ? "" : " \u00b7 off") +
-                     " \u00b7 volume " + a.volume + (a.sound && a.sound !== "default" ? " \u00b7 " + soundText(a.sound) : "");
+                     " \u00b7 volume " + a.volume + (a.lead ? " \u00b7 lead-in " + a.lead + " min" : "") + (a.sound && a.sound !== "default" ? " \u00b7 " + soundText(a.sound) : "");
     d.append(l1, l2);
     const tog = document.createElement("button");
     tog.type = "button";
@@ -417,6 +425,7 @@ function openEditor(a) {
   $("aOn").checked = a ? a.on : true;
   $("aVol").value = String(a ? a.volume : 8);
   $("aRamp").checked = a ? a.ramp : true;
+  $("aLead").value = String(a && a.lead ? a.lead : 0);
   fillSoundSelect(a ? a.sound : "default");
   const mask = a ? a.mask : 31;
   document.querySelectorAll("#aDays input").forEach((cb, i) => { cb.checked = !!(mask & (1 << i)); });
@@ -466,7 +475,8 @@ async function saveAlarm() {
   const picked = DAYS.filter((d, i) => document.querySelectorAll("#aDays input")[i].checked);
   const form = {op: editing ? "save" : "add", time: time, days: picked.length ? picked.join(",") : "once",
                 label: $("aLabel").value.trim(), on: $("aOn").checked ? "1" : "0",
-                volume: $("aVol").value, ramp: $("aRamp").checked ? "1" : "0", sound: $("aSound").value};
+                volume: $("aVol").value, ramp: $("aRamp").checked ? "1" : "0", sound: $("aSound").value,
+                lead: $("aLead").value};
   if (editing) form.id = editing.id;
   if (await sendAlarm(form)) closeEditor();
 }

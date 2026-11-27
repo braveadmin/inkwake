@@ -114,6 +114,12 @@ void end() {
 
 bool running() { return g_running; }
 
+void set_attenuation(uint8_t half_db) {
+  if (!g_running) return;
+  constexpr uint8_t kZeroDb = 0xBF;  // reg 0x32: 0x00 = -95.5 dB, +0.5 dB per step
+  wr(0x32, static_cast<uint8_t>(half_db >= kZeroDb ? 0 : kZeroDb - half_db));
+}
+
 void beep(uint32_t ms, uint8_t pct, uint32_t& pos_ms) {
   if (!g_running) {
     delay(ms);

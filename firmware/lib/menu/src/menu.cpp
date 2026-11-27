@@ -200,6 +200,7 @@ const char* Menu::boot_label() const {
           return "+1";
         case AlarmField::Days:
         case AlarmField::Ramp:
+        case AlarmField::Lead:
           return "Change";
         default:
           return "On/off";
@@ -411,6 +412,7 @@ Action Menu::save_edit() {
   a.days = edit_.days();
   a.volume = edit_.volume();
   a.ramp = edit_.ramp();
+  a.lead_minutes = edit_.lead();
   a.enabled = true;
   adding_ = false;
   show(Screen::Alarms, alarm_);

@@ -25,7 +25,8 @@ Works today (alpha, see [releases](https://github.com/braveadmin/inkwake/release
 - Time from the on-board RTC, corrected over NTP once a day, with the crystal's drift trimmed
   automatically; POSIX timezones with DST.
 - Up to 16 alarms with weekdays and labels, beep or your own WAV sound looped through the built-in
-  speaker (volume 1-10 per alarm, rising or steady; sounds uploaded from the setup page, see
+  speaker (volume 1-10 per alarm, rising or steady, optional 5-20 min lead-in that fades the sound
+  in from near silence before the alarm time; sounds uploaded from the setup page, see
   [docs/sound.md](docs/sound.md)), snooze 9 min, stop
   by holding the KEY button, skip the next ring with BOOT. Missed or skipped hours around DST are
   handled (ADR-0017).
@@ -35,7 +36,7 @@ Works today (alpha, see [releases](https://github.com/braveadmin/inkwake/release
   your Wi-Fi on a captive page. Up to five networks remembered.
 - Low-battery mark on the face; NTP and Wi-Fi skipped when the battery is critical.
 
-Planned for v1.0: touch snooze through the case, ambient wake sounds, sunrise light, web UI and OTA
+Planned for v1.0: touch snooze through the case, sunrise light, web UI and OTA
 updates, widgets (weather first), a 3D-printed case. Hobby pace, no dates:
 [docs/roadmap.md](docs/roadmap.md), scope in [docs/features.md](docs/features.md), decisions in
 [docs/adr/](docs/adr/).

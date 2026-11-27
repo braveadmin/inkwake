@@ -26,6 +26,11 @@ bool running();
 // pattern position `pos_ms`, which it advances. Blocks for about `ms`.
 void beep(uint32_t ms, uint8_t pct, uint32_t& pos_ms);
 
+// Codec DAC attenuation in 0.5 dB steps below full scale (lead-in, #4),
+// on top of the sample scaling below; 0 = none, as after begin(). Clamped to
+// the codec's range (95.5 dB). Ignored while not started.
+void set_attenuation(uint8_t half_db);
+
 // Plays `n` mono samples at `pct` percent (same scale as beep). The samples
 // are scaled in place. Blocks until they are queued for the speaker.
 void play(int16_t* samples, size_t n, uint8_t pct);

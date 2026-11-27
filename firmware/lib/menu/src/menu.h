@@ -11,7 +11,7 @@
 //   Alarms:      one row per alarm, "Add alarm" (hidden at kMaxAlarms), Back
 //   Alarm:       Edit, Turn off / Turn on, Delete, Back
 //   Alarm editor: hour, minute, days (+ Mon..Sun with Custom), volume, rising
-//                 or steady, then Save, Cancel
+//                 or steady, lead-in, then Save, Cancel
 //   Delete:      Cancel, Delete  (confirmation, Cancel first)
 //   Timezone:    preset list (plus "Custom" while a zone not in it is set), Back
 //   Wi-Fi:       Set up Wi-Fi, Forget all networks (only with one saved), Back

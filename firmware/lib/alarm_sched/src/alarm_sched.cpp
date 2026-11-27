@@ -76,6 +76,21 @@ std::optional<Upcoming> upcoming(const std::vector<Alarm>& alarms, const tz::Zon
   return best;
 }
 
+std::optional<Upcoming> lead_in(const std::vector<Alarm>& alarms, const tz::Zone& zone,
+                                int64_t now_utc, const Skip& skip, const Skip& quiet) {
+  std::optional<Upcoming> best;
+  for (size_t i = 0; i < alarms.size(); ++i) {
+    const Alarm& a = alarms[i];
+    if (a.lead_minutes == 0) continue;
+    const auto f = next_fire(a, zone, now_utc);
+    if (!f || *f - now_utc > static_cast<int64_t>(a.lead_minutes) * 60) continue;
+    if (a.id == skip.id && *f == skip.fire_utc) continue;
+    if (a.id == quiet.id && *f == quiet.fire_utc) continue;
+    if (!best || *f < best->fire_utc) best = Upcoming{i, *f};
+  }
+  return best;
+}
+
 SkipState skip_state(const std::vector<Alarm>& alarms, const tz::Zone& zone, const Skip& skip,
                      int64_t now_utc) {
   if (skip.id == 0) return SkipState::None;
@@ -119,6 +134,7 @@ const char* check(const Alarm& a) {
   if (!sound::alarm_sound_valid(a.sound.c_str())) return "sound: default or a-z, 0-9, - and _";
   if (a.sunrise_minutes > 60) return "sunrise over 60 min";
   if (a.volume < kMinVolume || a.volume > kMaxVolume) return "volume 1-10";
+  if (!lead_valid(a.lead_minutes)) return "lead-in 0, 5, 10, 15 or 20 min";
   for (char ch : a.label) {
     if (static_cast<unsigned char>(ch) < 0x20) return "control character in label";
   }
@@ -126,10 +142,11 @@ const char* check(const Alarm& a) {
 }
 
 std::vector<uint8_t> encode(const std::vector<Alarm>& alarms) {
-  std::vector<uint8_t> b{'A', 'L', 2, static_cast<uint8_t>(alarms.size())};
+  std::vector<uint8_t> b{'A', 'L', 3, static_cast<uint8_t>(alarms.size())};
   for (const Alarm& a : alarms) {
     const auto flags = static_cast<uint8_t>((a.enabled ? 1 : 0) | (a.ramp ? 2 : 0));
-    b.insert(b.end(), {a.id, flags, a.hour, a.minute, a.days, a.sunrise_minutes, a.volume});
+    b.insert(b.end(),
+             {a.id, flags, a.hour, a.minute, a.days, a.sunrise_minutes, a.volume, a.lead_minutes});
     b.push_back(static_cast<uint8_t>(a.label.size()));
     b.insert(b.end(), a.label.begin(), a.label.end());
     b.push_back(static_cast<uint8_t>(a.sound.size()));
@@ -141,8 +158,9 @@ std::vector<uint8_t> encode(const std::vector<Alarm>& alarms) {
 bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out) {
   if (len < 4 || data[0] != 'A' || data[1] != 'L') return false;
   const uint8_t version = data[2];
-  if (version != 1 && version != 2) return false;
-  const size_t fixed = version == 1 ? 6 : 7;  // v1 (before #43) has no volume byte
+  if (version < 1 || version > 3) return false;
+  // v1 (before #43) has no volume byte, v2 (before #4) no lead-in byte.
+  const size_t fixed = version == 1 ? 6 : version == 2 ? 7 : 8;
   const size_t n = data[3];
   if (n > kMaxAlarms) return false;
   std::vector<Alarm> v;
@@ -168,6 +186,7 @@ bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out) {
       a.ramp = data[p + 1] & 2;
       a.volume = data[p + 6];
     }
+    if (version >= 3) a.lead_minutes = data[p + 7];  // older: no lead-in
     p += fixed;
     if (!str(a.label, kMaxLabel) || !str(a.sound, kMaxSound)) return false;
     if (a.sound.empty()) a.sound = sound::kDefault;  // nothing chose one: the beep

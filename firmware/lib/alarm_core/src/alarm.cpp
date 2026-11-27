@@ -86,6 +86,25 @@ uint8_t ring_volume(uint32_t elapsed_s, uint8_t level, bool ramp) {
   return static_cast<uint8_t>(v > top ? top : v);
 }
 
+bool lead_valid(uint8_t minutes) {
+  for (uint8_t m : kLeadChoices) {
+    if (m == minutes) return true;
+  }
+  return false;
+}
+
+uint8_t lead_atten_half_db(uint32_t elapsed_s, uint32_t lead_s, uint8_t level) {
+  // In half dB below full scale; volume_pct maps 0-100 % onto -40..0 dBFS,
+  // so the top is (100 - pct) x 0.4 dB = (100 - pct) / 5 half-dB steps down.
+  const int32_t start = -kLeadStartDb * 2;
+  const int32_t end = (100 - volume_pct(level)) * 4 / 5 + kLeadEndBelowDb * 2;
+  if (lead_s == 0 || elapsed_s >= lead_s) return static_cast<uint8_t>(end);
+  const int64_t span = start - end;
+  // Rounded to the nearest step.
+  const int64_t done = (span * elapsed_s * 2 + lead_s) / (2 * static_cast<int64_t>(lead_s));
+  return static_cast<uint8_t>(start - done);
+}
+
 bool beep_on(uint32_t ms) {
   const uint32_t t = ms % kBeepCycleMs;
   return t < 800 && (t / 100) % 2 == 0;

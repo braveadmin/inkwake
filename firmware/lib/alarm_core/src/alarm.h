@@ -33,6 +33,15 @@ constexpr uint8_t kMinVolume = 1;
 constexpr uint8_t kMaxVolume = 10;
 constexpr uint8_t kDefaultVolume = 8;
 
+// Lead-in (#4): the alarm's own sound starts this many minutes before the
+// alarm time, fading in from near silence (kLeadStartDb) to kLeadEndBelowDb
+// under the level's top by the alarm time. Then it rings as usual: "rising"
+// starts 16 dB under the top, so it carries on from where the lead-in ended;
+// "steady" jumps to the top. 0 = no lead-in (the default).
+constexpr uint8_t kLeadChoices[] = {0, 5, 10, 15, 20};
+constexpr int kLeadStartDb = -60;
+constexpr int kLeadEndBelowDb = 15;
+
 struct Alarm {
   uint8_t id = 0;
   std::string label;
@@ -44,7 +53,11 @@ struct Alarm {
   uint8_t sunrise_minutes = 0;      // 0 = no sunrise light
   uint8_t volume = kDefaultVolume;  // kMinVolume .. kMaxVolume
   bool ramp = true;                 // rising: starts 40 % below the level's top
+  uint8_t lead_minutes = 0;         // one of kLeadChoices
 };
+
+// True for the values in kLeadChoices.
+bool lead_valid(uint8_t minutes);
 
 // Local wall-clock time, already timezone-adjusted by the caller.
 struct LocalTime {
@@ -111,6 +124,13 @@ uint8_t volume_pct(uint8_t level);
 // volume sits around 5-20 %; the default level 8 rings 50 % -> 90 %, as before
 // #43); without, it rings at the top from the start.
 uint8_t ring_volume(uint32_t elapsed_s, uint8_t level, bool ramp);
+
+// Lead-in loudness after `elapsed_s` of a `lead_s` lead-in for an alarm at
+// `level`, as attenuation in 0.5 dB steps below full scale (the ES8311's DAC
+// volume steps: fine at the quiet end, where the samples' own 16 bits would
+// get coarse). Linear in dB from kLeadStartDb to the level's top minus
+// kLeadEndBelowDb; elapsed past lead_s stays at the end.
+uint8_t lead_atten_half_db(uint32_t elapsed_s, uint32_t lead_s, uint8_t level);
 
 // Beep pattern, 1.2 s: four 100 ms beeps 100 ms apart, then 400 ms quiet.
 constexpr uint32_t kBeepCycleMs = 1200;
