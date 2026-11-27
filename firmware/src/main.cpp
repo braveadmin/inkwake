@@ -73,6 +73,7 @@
 #include <esp_sleep.h>
 #include <sys/time.h>
 
+#include <algorithm>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -101,6 +102,8 @@
 #include "rtc.h"
 #include "setup_screen.h"
 #include "shtc3.h"
+#include "sound.h"
+#include "sound_files.h"
 #include "st7305.h"
 #include "tz.h"
 #include "tz_presets.h"
@@ -177,6 +180,7 @@ constexpr char kPrefAlarms[] = "alarms";  // sched::encode blob
 constexpr size_t kAlarmBlobMax =
     4 + sched::kMaxAlarms * (sched::kBlobFixed + sched::kMaxLabel + sched::kMaxSound);
 constexpr uint32_t kDismissHoldMs = 2'000;  // KEY held this long stops a ringing or snoozed alarm
+constexpr uint32_t kTestSoundMs = 6000;     // `sound play`, Test with a file sound
 constexpr uint32_t kTestBeepMs = 3 * kBeepCycleMs;  // `alarm beep`, Test on the setup page
 constexpr uint32_t kMenuBeepMs = 800;               // volume changed in the menu: four beeps
 constexpr uint8_t kTestAlarmId = 0;                 // `alarm test`
@@ -836,40 +840,99 @@ uint8_t show_ringing() {
   return c.minute;
 }
 
-// Plays the beep pattern for `ms` at a volume level's top loudness (#43), to
-// try a level without an alarm. False if the codec did not answer.
-bool play_level(uint8_t level, uint32_t ms) {
-  const bool sound = audio::begin();
-  uint32_t pos_ms = 0;
-  if (sound) audio::beep(ms, volume_pct(level), pos_ms);
-  audio::end();
-  return sound;
+// What rings: an alarm's sound file looping, or the beep pattern (#44). Any
+// trouble with the file (missing, bad format, storage not ready, a read
+// failing mid-play) falls back to the beep: an alarm never stays silent
+// because of a sound file.
+class Ring {
+ public:
+  // False if the codec did not answer (then nothing plays at all).
+  bool start(const char* sound_name) {
+    if (strcmp(sound_name, sound::kDefault) != 0) {
+      const char* why = nullptr;
+      if (!sound_files::mount(false)) {
+        why = "sound storage not ready (no files uploaded yet?)";
+      } else {
+        why = player_.open(sound_name);
+      }
+      if (why == nullptr && audio::begin(player_.rate())) {
+        snprintf(name_, sizeof name_, "%s", sound_name);
+        return true;
+      }
+      if (why == nullptr) why = "speaker did not start at the file's rate";
+      player_.close();
+      if (HWCDC::isPlugged()) Serial.printf("sound %s: %s; beeping instead\r\n", sound_name, why);
+    }
+    name_[0] = '\0';
+    return audio::begin();
+  }
+
+  // Plays about `ms` at `pct` percent.
+  void play(uint32_t ms, uint8_t pct) {
+    if (player_.is_open()) {
+      static int16_t buf[sound::kMaxRate / 10];
+      const size_t n = std::min<size_t>(player_.rate() * ms / 1000, sizeof buf / sizeof buf[0]);
+      if (player_.read(buf, n)) {
+        audio::play(buf, n, pct);
+        return;
+      }
+      if (HWCDC::isPlugged()) {
+        Serial.printf("sound %s: read failed while playing; beeping instead\r\n", name_);
+      }
+      audio::end();
+      audio::begin();
+    }
+    audio::beep(ms, pct, pos_ms_);
+  }
+
+  void stop() {
+    player_.close();
+    audio::end();
+  }
+
+ private:
+  sound_files::Player player_;
+  uint32_t pos_ms_ = 0;
+  char name_[sound::kMaxName + 1] = "";
+};
+
+// Plays a sound (beep or file) for `ms` at a volume level's top loudness
+// (#43), to try it without an alarm. False if the codec did not answer.
+bool play_level(uint8_t level, uint32_t ms, const char* sound_name = sound::kDefault) {
+  Ring r;
+  const bool ok = r.start(sound_name);
+  for (uint32_t t = 0; ok && t < ms; t += 100) r.play(100, volume_pct(level));
+  r.stop();
+  return ok;
 }
 
-// Beeps until the alarm is snoozed, stopped or gives up, then redraws the face.
-// A KEY press already down when ringing starts counts only after its release.
+// Plays the alarm's sound until it is snoozed, stopped or gives up, then
+// redraws the face. A KEY press already down when ringing starts counts only
+// after its release.
 void ring_loop() {
-  const bool sound = audio::begin();
-  if (HWCDC::isPlugged()) {
-    Serial.printf("alarm ringing%s: tap KEY to snooze, hold 2 s to stop\r\n",
-                  sound ? "" : " (no sound: speaker codec did not answer)");
-  }
-  uint8_t shown_min = show_ringing();
-  // The ringing alarm's volume (#43); `alarm test` and a deleted alarm ring
-  // with the defaults.
+  // The ringing alarm's volume (#43) and sound (#44); `alarm test` and a
+  // deleted alarm ring with the defaults.
   uint8_t level = kDefaultVolume;
   bool ramp = true;
+  std::string sound_name = sound::kDefault;
   if (const auto i = sched::find(g_alarms, g_rtc.ring.alarm_id)) {
     level = g_alarms[*i].volume;
     ramp = g_alarms[*i].ramp;
+    sound_name = g_alarms[*i].sound;
   }
-  uint32_t pos_ms = 0;
+  Ring ring;
+  const bool audible = ring.start(sound_name.c_str());
+  if (HWCDC::isPlugged()) {
+    Serial.printf("alarm ringing%s: tap KEY to snooze, hold 2 s to stop\r\n",
+                  audible ? "" : " (no sound: speaker codec did not answer)");
+  }
+  uint8_t shown_min = show_ringing();
   bool was_down = digitalRead(kKeyPin) == LOW;
   uint32_t down_ms = 0;  // 0 = no press counted
   while (g_rtc.ring.state == RingState::Ringing) {
     const int64_t now = time(nullptr);
     const auto elapsed = static_cast<uint32_t>(now - g_rtc.ring.since);
-    audio::beep(100, ring_volume(elapsed, level, ramp), pos_ms);
+    ring.play(100, ring_volume(elapsed, level, ramp));
     const bool down = digitalRead(kKeyPin) == LOW;
     if (down && !was_down) down_ms = millis() | 1;
     if (down && down_ms != 0 && millis() - down_ms >= kDismissHoldMs) {
@@ -883,7 +946,7 @@ void ring_loop() {
     const tz::Civil c = tz::to_civil(g_zone, time(nullptr));
     if (g_rtc.ring.state == RingState::Ringing && c.minute != shown_min) shown_min = show_ringing();
   }
-  audio::end();
+  ring.stop();
   // A stopping hold is not also the start of a 5 s setup hold.
   while (digitalRead(kKeyPin) == LOW) delay(10);
   if (HWCDC::isPlugged()) {
@@ -904,6 +967,7 @@ char handle_alarms() {
 
 void ntp_sync_soon();
 void print_time();
+void show_note(const char* line1, const char* line2);
 void print_alarms();
 
 void show_setup(portal::Screen screen, const char* ap, const char* ssid) {
@@ -970,11 +1034,11 @@ void setup_alarms_json(char* buf, size_t n) {
     }
     snprintf(item, sizeof item,
              "%s{\"id\":%u,\"time\":\"%02u:%02u\",\"days\":\"%s\",\"mask\":%u,\"on\":%s,"
-             "\"label\":\"%s\",\"next\":\"%s\",\"volume\":%u,\"ramp\":%s}",
+             "\"label\":\"%s\",\"next\":\"%s\",\"volume\":%u,\"ramp\":%s,\"sound\":\"%s\"}",
              out.size() > 1 ? "," : "", a.id, a.hour, a.minute, sched::format_days(a.days).c_str(),
-             a.days, a.enabled ? "true" : "false", label, next, a.volume,
-             a.ramp ? "true" : "false");
-    if (out.size() + strlen(item) + 2 > n) break;  // cannot happen with 16 alarms in 4 KB
+             a.days, a.enabled ? "true" : "false", label, next, a.volume, a.ramp ? "true" : "false",
+             a.sound.c_str());                     // sound names need no escaping
+    if (out.size() + strlen(item) + 2 > n) break;  // cannot happen with 16 alarms in 6 KB
     out += item;
   }
   out += "]";
@@ -991,20 +1055,29 @@ bool parse_volume(const char* s, uint8_t& level) {
 }
 
 // POST /api/alarms: op=add|save|del, id, time=HH:MM, days (parse_days form), label, on=1|0,
-// volume=1..10 and ramp=1|0 (#43; kept as they are when left out, defaults on add).
-// op=test&volume=N plays the beep at that level for a few seconds without saving.
+// volume=1..10 and ramp=1|0 (#43), sound=NAME (#44; these three are kept as
+// they are when left out, defaults on add). op=test&volume=N[&sound=NAME]
+// plays that sound at that level for a few seconds without saving.
 const char* setup_alarm_edit(const char* form) {
   char op[8] = "", id_s[8] = "", time_s[8] = "", days_s[48] = "", on_s[4] = "1";
-  char vol_s[8] = "", ramp_s[4] = "";
+  char vol_s[8] = "", ramp_s[4] = "", sound_s[sound::kMaxName + 1] = "";
   char label[sched::kMaxLabel + 1] = "";
   provision::form_value(form, "op", op, sizeof op);
   provision::form_value(form, "id", id_s, sizeof id_s);
   const bool has_vol = provision::form_value(form, "volume", vol_s, sizeof vol_s) && vol_s[0];
   const bool has_ramp = provision::form_value(form, "ramp", ramp_s, sizeof ramp_s) && ramp_s[0];
+  const bool has_sound =
+      provision::form_value(form, "sound", sound_s, sizeof sound_s) && sound_s[0];
+  if (has_sound && !sound::alarm_sound_valid(sound_s)) return "unknown sound";
   uint8_t level = kDefaultVolume;
   if (has_vol && !parse_volume(vol_s, level)) return "volume 1-10";
   if (strcmp(op, "test") == 0) {
-    return play_level(level, kTestBeepMs) ? nullptr : "no sound: the speaker codec did not answer";
+    const char* name = has_sound ? sound_s : sound::kDefault;
+    const bool file = strcmp(name, sound::kDefault) != 0;
+    if (file && !sound_files::exists(name)) return "sound file missing: it would beep";
+    return play_level(level, file ? kTestSoundMs : kTestBeepMs, name)
+               ? nullptr
+               : "no sound: the speaker codec did not answer";
   }
   std::vector<Alarm> v = g_alarms;
   Alarm* a = nullptr;
@@ -1040,6 +1113,7 @@ const char* setup_alarm_edit(const char* form) {
     a->enabled = strcmp(on_s, "0") != 0;
     if (has_vol) a->volume = level;
     if (has_ramp) a->ramp = strcmp(ramp_s, "0") != 0;
+    if (has_sound) a->sound = sound_s;
     if (const char* why = sched::check(*a)) return why;
   }
   if (!save_alarms(v)) return "saved until power-off only (NVS write failed)";
@@ -1055,6 +1129,11 @@ const portal::Hooks kSetupHooks = {show_setup,        setup_load,      setup_app
 char run_setup(bool verbose) {
   while (digitalRead(kKeyPin) == LOW) delay(10);  // the hold that opened it is no cancel
   delay(50);                                      // debounce the release
+  if (!sound_files::mount(false)) {               // the page lists and uploads sound files (#44)
+    show_note("Preparing", "sound storage");
+    if (verbose) Serial.print("preparing sound storage (first use, up to a minute)...\r\n");
+    sound_files::mount(true);
+  }
   if (verbose) {
     Serial.print("Wi-Fi setup: join the inkwake-XXXX network shown on the screen\r\n");
     Serial.flush();
@@ -1322,6 +1401,7 @@ void print_help() {
       "  tz [POSIX-TZ]          show or set the timezone, e.g. tz CET-1CEST,M3.5.0,M10.5.0/3\r\n"
       "  rtc                    RTC time and wake counters\r\n"
       "  alarm                  list alarms; `alarm help` for add, edit, test\r\n"
+      "  sound                  alarm sound files; `sound help` for play, delete\r\n"
       "  setup                  Wi-Fi setup page (same as holding KEY 5 s)\r\n"
       "  (KEY held 2 s opens the button menu: date & time, alarms, timezone, Wi-Fi;\r\n"
       "   BOOT on the face skips the next alarm's ring, BOOT again undoes it)\r\n"
@@ -1714,9 +1794,9 @@ void print_alarms() {
   const int64_t now = time(nullptr);
   if (g_alarms.empty()) Serial.print("no alarms; add one with `alarm add 07:00 weekdays Work`\r\n");
   for (const Alarm& a : g_alarms) {
-    Serial.printf("  %u  %02u:%02u  %-14s %-3s  vol %2u %-6s  %s", a.id, a.hour, a.minute,
+    Serial.printf("  %u  %02u:%02u  %-14s %-3s  vol %2u %-6s  %-15s  %s", a.id, a.hour, a.minute,
                   sched::format_days(a.days).c_str(), a.enabled ? "on" : "off", a.volume,
-                  a.ramp ? "rising" : "steady", a.label.c_str());
+                  a.ramp ? "rising" : "steady", a.sound.c_str(), a.label.c_str());
     if (const auto f = g_rtc.time_set ? sched::next_fire(a, g_zone, now) : std::nullopt) {
       print_stamp("   next", static_cast<time_t>(*f));
     }
@@ -1761,6 +1841,7 @@ void print_alarm_usage() {
       "  alarm on ID | alarm off ID | alarm del ID\r\n"
       "  alarm volume ID 1-10       loudness (8 = default, 10 = loudest)\r\n"
       "  alarm ramp ID on|off       on: starts quieter and rises to the level; off: steady\r\n"
+      "  alarm sound ID NAME        a sound file (`sound` lists them) or default (the beep)\r\n"
       "  alarm beep 1-10            play that level for a few seconds (nothing saved)\r\n"
       "  alarm skip                 skip the next ring, or undo (same as a BOOT tap)\r\n"
       "  alarm test [ID]            ring now, as alarm ID would (tap KEY = snooze, hold 2 s = "
@@ -1846,7 +1927,7 @@ void handle_alarm(const String& line) {
     const auto i = id > 0 && id < 256 ? sched::find(v, static_cast<uint8_t>(id)) : std::nullopt;
     if (!i) {
       if (verb == "on" || verb == "off" || verb == "del" || verb == "time" || verb == "days" ||
-          verb == "label" || verb == "volume" || verb == "ramp") {
+          verb == "label" || verb == "volume" || verb == "ramp" || verb == "sound") {
         Serial.print("no alarm with that ID; `alarm` lists them\r\n");
       } else {
         print_alarm_usage();
@@ -1879,6 +1960,17 @@ void handle_alarm(const String& line) {
             "volume 1-10, e.g. `alarm volume 1 5` (1 quietest, 8 default, 10 loudest)\r\n");
         return;
       }
+    } else if (verb == "sound") {
+      if (!sound::alarm_sound_valid(arg.c_str())) {
+        Serial.print(
+            "sound: default (the beep) or a name from `sound`, e.g. `alarm sound 1 birds`\r\n");
+        return;
+      }
+      sound_files::mount(false);
+      if (strcmp(arg.c_str(), sound::kDefault) != 0 && !sound_files::exists(arg.c_str())) {
+        Serial.print("note: no such sound file yet; the alarm beeps until it is uploaded\r\n");
+      }
+      a.sound = arg.c_str();
     } else if (verb == "ramp") {
       if (arg != "on" && arg != "off") {
         Serial.print("ramp on (starts quieter, rises to the volume) or off (steady)\r\n");
@@ -1899,6 +1991,79 @@ void handle_alarm(const String& line) {
   if (!save_alarms(v)) Serial.print("could not save the alarms: they are lost at power-off\r\n");
   print_alarms();
   if (current_face() != g_rtc.shown) update_display(false);
+}
+
+// Mounts the sound partition, formatting it on first use (slow, once).
+bool sounds_ready() {
+  if (sound_files::mount(false)) return true;
+  Serial.print("preparing sound storage (first use, up to a minute)...\r\n");
+  Serial.flush();
+  if (sound_files::mount(true)) return true;
+  Serial.print("sound storage failed to mount\r\n");
+  return false;
+}
+
+void print_sounds() {
+  if (!sounds_ready()) return;
+  static sound_files::Info list[sound::kMaxFiles];
+  const size_t n = sound_files::list(list, sound::kMaxFiles);
+  if (n == 0) Serial.print("no sound files; upload WAVs on the setup page (`setup`)\r\n");
+  for (size_t i = 0; i < n; ++i) {
+    const sound_files::Info& f = list[i];
+    if (f.err == sound::WavError::None) {
+      Serial.printf("  %-15s %7lu bytes  %5lu Hz  %3lu s\r\n", f.name,
+                    static_cast<unsigned long>(f.bytes), static_cast<unsigned long>(f.wav.rate),
+                    static_cast<unsigned long>(sound::seconds(f.wav)));
+    } else {
+      Serial.printf("  %-15s %7lu bytes  unusable: %s\r\n", f.name,
+                    static_cast<unsigned long>(f.bytes), sound::wav_error_text(f.err));
+    }
+  }
+  uint32_t used = 0, total = 0;
+  sound_files::usage(used, total);
+  Serial.printf("%lu of %lu KB used. Format: WAV, 16-bit PCM, mono, 16-48 kHz.\r\n",
+                static_cast<unsigned long>(used / 1024), static_cast<unsigned long>(total / 1024));
+}
+
+void handle_sound(const String& line) {
+  String w[4];
+  const size_t n = split_words(line, w, 4);  // "sound", verb, name, level
+  const String verb = n > 1 ? w[1] : String();
+  if (verb.isEmpty()) {
+    print_sounds();
+  } else if (verb == "play" && n > 2) {
+    uint8_t level = kDefaultVolume;
+    if (n > 3 && !parse_volume(w[3].c_str(), level)) {
+      Serial.print("volume 1-10\r\n");
+      return;
+    }
+    if (!sound::alarm_sound_valid(w[2].c_str())) {
+      Serial.print("no such sound; `sound` lists them\r\n");
+      return;
+    }
+    sounds_ready();
+    Serial.printf("playing %s at volume %u for %lu s\r\n", w[2].c_str(), level,
+                  static_cast<unsigned long>(kTestSoundMs / 1000));
+    if (!play_level(level, kTestSoundMs, w[2].c_str())) {
+      Serial.print("no sound: speaker codec did not answer\r\n");
+    }
+  } else if (verb == "del" && n > 2) {
+    if (!sounds_ready()) return;
+    const char* why = sound_files::remove(w[2].c_str());
+    Serial.printf("%s\r\n", why ? why : "deleted");
+    for (const Alarm& a : g_alarms) {
+      if (why == nullptr && a.sound == w[2].c_str()) {
+        Serial.printf("alarm %u used it and beeps now; `alarm sound %u NAME` picks another\r\n",
+                      a.id, a.id);
+      }
+    }
+  } else {
+    Serial.print(
+        "  sound                      list the sound files\r\n"
+        "  sound play NAME [1-10]     play one for a few seconds (default = the beep)\r\n"
+        "  sound del NAME             delete one\r\n"
+        "  Upload WAVs on the setup page (`setup` or KEY held 5 s).\r\n");
+  }
 }
 
 void handle_line(const String& line) {
@@ -1928,6 +2093,8 @@ void handle_line(const String& line) {
     print_drift();
   } else if (line == "alarm" || line == "alarms" || line.startsWith("alarm ")) {
     handle_alarm(line == "alarms" ? String("alarm") : line);
+  } else if (line == "sound" || line == "sounds" || line.startsWith("sound ")) {
+    handle_sound(line == "sounds" ? String("sound") : line);
   } else if (line == "tz" || line.startsWith("tz ")) {
     String arg = line.substring(2);
     arg.trim();

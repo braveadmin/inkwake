@@ -5,6 +5,8 @@
 #include <cctype>
 #include <cstring>
 
+#include "sound.h"
+
 namespace inkwake::sched {
 
 namespace {
@@ -114,6 +116,7 @@ const char* check(const Alarm& a) {
   if (a.days & ~kEveryDay) return "bad days";
   if (a.label.size() > kMaxLabel) return "label too long";
   if (a.sound.size() > kMaxSound) return "sound name too long";
+  if (!sound::alarm_sound_valid(a.sound.c_str())) return "sound: default or a-z, 0-9, - and _";
   if (a.sunrise_minutes > 60) return "sunrise over 60 min";
   if (a.volume < kMinVolume || a.volume > kMaxVolume) return "volume 1-10";
   for (char ch : a.label) {
@@ -167,6 +170,7 @@ bool decode(const uint8_t* data, size_t len, std::vector<Alarm>& out) {
     }
     p += fixed;
     if (!str(a.label, kMaxLabel) || !str(a.sound, kMaxSound)) return false;
+    if (a.sound.empty()) a.sound = sound::kDefault;  // nothing chose one: the beep
     if (check(a) || find(v, a.id)) return false;
     v.push_back(a);
   }

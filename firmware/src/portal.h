@@ -13,11 +13,19 @@
 //                          answers {"networks":[names]}
 //   POST /api/close        ends setup
 //   GET  /api/alarms       {"rev":N,"error":"...","alarms":[...]} (#2; list from
-//   Hooks::alarms_json) POST /api/alarms       form for Hooks::alarm_edit; the page polls GET until
-//   rev changes anything else          302 to the page (captive portal probes)
+//                          Hooks::alarms_json)
+//   POST /api/alarms       form for Hooks::alarm_edit; the page polls GET until
+//                          rev changes
+//   GET  /api/sounds       {"ready","sounds":[{"name","bytes","seconds","rate","error"}],
+//                          "used","total","max_file","max"} (#44)
+//   POST /api/sounds       form: op=del, name
+//   POST /api/sounds/upload?file=NAME.wav  body = the WAV file; answers {"name"}
+//   anything else          302 to the page (captive portal probes)
 //
 // Web requests run in the server's own task and only queue work; run() does
-// all Wi-Fi changes and calls the hooks on the caller's task.
+// all Wi-Fi changes and calls the hooks on the caller's task. Sound files are
+// the exception: they are listed, deleted and streamed in on the server's task
+// (src/sound_files keeps that safe).
 #pragma once
 
 #include <cstddef>

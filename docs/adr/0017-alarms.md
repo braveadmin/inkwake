@@ -4,6 +4,7 @@
 - Date: 2026-11-23
 - Amended by ADR-0018 (2026-11-25): alarms also edited with KEY + BOOT in the button menu (#55); KEY held 2 s on the face opens the menu unless an alarm is snoozed.
 - Amended 2026-11-25 (#43): the beep volume is set per alarm (level 1-10, rising or steady).
+- Amended 2026-11-27 (#44): `sound` picks a WAV file per alarm (ADR-0006 amendment); `default` stays the beep, and the beep is the fallback whenever the file can't be played.
 
 ## Context
 
@@ -34,5 +35,5 @@ F1 (#2) brings any number of alarms (cap 16) with label, time, weekday mask, sou
 ## Consequences
 
 - The scheduler is unit-tested on the host, including DST nights; the ES8311 register sequence (taken from Espressif's esp_codec_dev, as in Waveshare's audio example) is checked on the board only.
-- Sound name and sunrise minutes are stored and edited later (F3, F4); they have no effect yet.
+- Sunrise minutes are stored and edited later (F4); they have no effect yet. The sound name plays a file since #44 (serial `alarm sound`, the page's Sound field; not in the button menu yet).
 - The level scale (55-100 %) and the beep pattern are starting points, to tune by ear on the board. Firmware from before #43 can't read a version 2 blob and starts with no alarms after a downgrade.

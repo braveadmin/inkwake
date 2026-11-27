@@ -184,6 +184,15 @@ void test_check() {
   a.id = 1;
   a.hour = 24;
   TEST_ASSERT_NOT_NULL(check(a));
+  a.hour = 7;
+  a.sound = "birds";  // #44: default or a file name
+  TEST_ASSERT_NULL(check(a));
+  a.sound = "Birds";
+  TEST_ASSERT_NOT_NULL(check(a));
+  a.sound = "../x";
+  TEST_ASSERT_NOT_NULL(check(a));
+  a.sound = "";
+  TEST_ASSERT_NOT_NULL(check(a));
 }
 
 void test_codec_round_trip() {
@@ -218,6 +227,7 @@ void test_codec_reads_version_1() {
   TEST_ASSERT_TRUE(decode(v1.data(), v1.size(), out));
   TEST_ASSERT_EQUAL_UINT32(2, out.size());
   TEST_ASSERT_EQUAL_STRING("Work", out[0].label.c_str());
+  TEST_ASSERT_EQUAL_STRING("default", out[0].sound.c_str());  // empty sound = the beep
   TEST_ASSERT_TRUE(out[0].enabled);
   TEST_ASSERT_EQUAL_UINT8(kDefaultVolume, out[0].volume);
   TEST_ASSERT_TRUE(out[0].ramp);

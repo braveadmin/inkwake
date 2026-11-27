@@ -24,8 +24,9 @@ Works today (alpha, see [releases](https://github.com/braveadmin/inkwake/release
   with a partial refresh; the board sleeps in between.
 - Time from the on-board RTC, corrected over NTP once a day, with the crystal's drift trimmed
   automatically; POSIX timezones with DST.
-- Up to 16 alarms with weekdays and labels, beep through the built-in speaker (volume 1-10 per
-  alarm, rising or steady), snooze 9 min, stop
+- Up to 16 alarms with weekdays and labels, beep or your own WAV sound looped through the built-in
+  speaker (volume 1-10 per alarm, rising or steady; sounds uploaded from the setup page, see
+  [docs/sound.md](docs/sound.md)), snooze 9 min, stop
   by holding the KEY button, skip the next ring with BOOT. Missed or skipped hours around DST are
   handled (ADR-0017).
 - Everything set with the two buttons: date & time, timezone, alarms, Wi-Fi. No phone or Wi-Fi
