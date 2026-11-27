@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/braveadmin/inkwake/compare/v0.3.0...v0.4.0) (2026-11-27)
+
+
+### Features
+
+* **alarm:** WAV sound files per alarm, with beep fallback ([#44](https://github.com/braveadmin/inkwake/issues/44)) ([#67](https://github.com/braveadmin/inkwake/issues/67)) ([e85c210](https://github.com/braveadmin/inkwake/commit/e85c2100e1e9c01f5f82b21b270230fd446b2510))
+* **menu:** show progress while KEY is held towards Wi-Fi setup ([#59](https://github.com/braveadmin/inkwake/issues/59)) ([#64](https://github.com/braveadmin/inkwake/issues/64)) ([1849bb5](https://github.com/braveadmin/inkwake/commit/1849bb5a4762305cc8c3e19311ff7b272500c264))
+
 ## [0.3.0](https://github.com/braveadmin/inkwake/compare/v0.2.0...v0.3.0) (2026-11-25)
 
 
